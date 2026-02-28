@@ -1,7 +1,11 @@
 package dispatcher
 
 import (
+	"bufio"
+	"fmt"
+	"os"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -220,6 +224,25 @@ func hasMinRAM(minMB int) bool {
 	if minMB <= 0 {
 		return true
 	}
+	// Use MemAvailable from /proc/meminfo (not Freeram which excludes buffers/cache)
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return true // can't check, assume OK
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "MemAvailable:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				kb := 0
+				fmt.Sscanf(fields[1], "%d", &kb)
+				return (kb / 1024) >= minMB
+			}
+		}
+	}
+	// Fallback to sysinfo if /proc/meminfo doesn't have MemAvailable
 	var info syscall.Sysinfo_t
 	if err := syscall.Sysinfo(&info); err != nil {
 		return true
