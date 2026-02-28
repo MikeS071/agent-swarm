@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/MikeS071/agent-swarm/internal/backend"
+	"github.com/MikeS071/agent-swarm/internal/dispatcher"
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/progress"
 	"github.com/MikeS071/agent-swarm/internal/sysinfo"
@@ -170,7 +171,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refresh()
 			return m, nil
 		case "g":
-			m.lastErr = nil
+			m.approveGate()
+			m.refresh()
 			return m, nil
 		case "p":
 			m.nextProject()
@@ -513,6 +515,25 @@ func newBackend(cfg *config.Config) backend.AgentBackend {
 		return backend.NewCodexBackend(cfg.Backend.Binary, cfg.Backend.BypassSandbox)
 	}
 	return &noopBackend{}
+}
+
+func (m *model) approveGate() {
+	if m.tracker == nil || m.config == nil || len(m.projects) == 0 {
+		return
+	}
+	d := dispatcher.New(m.config, m.tracker)
+	sig, _ := d.Evaluate()
+	if sig != dispatcher.SignalPhaseGate {
+		m.lastErr = fmt.Errorf("no phase gate (signal: %s)", sig)
+		return
+	}
+	d.ApprovePhaseGate()
+	proj := m.projects[m.projectIndex]
+	if err := m.tracker.Save(proj.trackerPath); err != nil {
+		m.lastErr = err
+		return
+	}
+	m.lastErr = nil
 }
 
 func (m *model) nextProject() {
