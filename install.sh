@@ -89,14 +89,16 @@ if [ "$OPENCLAW_MODE" = true ]; then
     
     # Install skill
     mkdir -p "$SKILL_DIR"
-    if [ -f "skill/SKILL.md" ]; then
-        cp skill/SKILL.md "$SKILL_DIR/SKILL.md"
-    else
-        # Download from repo
-        curl -sSL "https://raw.githubusercontent.com/MikeS071/agent-swarm/main/skill/SKILL.md" \
-            -o "$SKILL_DIR/SKILL.md"
-    fi
-    echo "✅ Skill installed at $SKILL_DIR/SKILL.md"
+    # Copy all skill files
+    for SKILL_FILE in SKILL.md AGENTS-SNIPPET.md TOOLS-SNIPPET.md MEMORY-ENTRY.md; do
+        if [ -f "skill/$SKILL_FILE" ]; then
+            cp "skill/$SKILL_FILE" "$SKILL_DIR/$SKILL_FILE"
+        else
+            curl -sSL "https://raw.githubusercontent.com/MikeS071/agent-swarm/main/skill/$SKILL_FILE" \
+                -o "$SKILL_DIR/$SKILL_FILE" 2>/dev/null || true
+        fi
+    done
+    echo "✅ Skill files installed at $SKILL_DIR/"
     
     # Create swarm workspace directory
     SWARM_DIR="$OPENCLAW_WORKSPACE/swarm"
@@ -159,6 +161,51 @@ WATCHDOG
     else
         (crontab -l 2>/dev/null; echo "$CRON_CMD") | crontab -
         echo "✅ Watchdog cron installed (every 5 minutes)"
+    fi
+    
+    # --- Inject workspace file snippets ---
+    SKILL_REPO_DIR="$SKILL_DIR"
+    
+    # AGENTS.md — append swarm section if not already present
+    AGENTS_FILE="$OPENCLAW_WORKSPACE/AGENTS.md"
+    if [ -f "$AGENTS_FILE" ]; then
+        if ! grep -q "Agent Swarm (Go CLI" "$AGENTS_FILE" 2>/dev/null; then
+            echo "" >> "$AGENTS_FILE"
+            cat "$SKILL_DIR/AGENTS-SNIPPET.md" >> "$AGENTS_FILE"
+            echo "✅ Appended agent-swarm section to AGENTS.md"
+        else
+            echo "ℹ️  AGENTS.md already has agent-swarm section"
+        fi
+    else
+        echo "⚠️  No AGENTS.md found at $AGENTS_FILE — create one and add the agent-swarm section from skill/AGENTS-SNIPPET.md"
+    fi
+    
+    # TOOLS.md — append swarm section if not already present
+    TOOLS_FILE="$OPENCLAW_WORKSPACE/TOOLS.md"
+    if [ -f "$TOOLS_FILE" ]; then
+        if ! grep -q "Agent Swarm CLI" "$TOOLS_FILE" 2>/dev/null; then
+            echo "" >> "$TOOLS_FILE"
+            cat "$SKILL_DIR/TOOLS-SNIPPET.md" >> "$TOOLS_FILE"
+            echo "✅ Appended agent-swarm section to TOOLS.md"
+        else
+            echo "ℹ️  TOOLS.md already has agent-swarm section"
+        fi
+    else
+        echo "⚠️  No TOOLS.md found at $TOOLS_FILE — create one and add from skill/TOOLS-SNIPPET.md"
+    fi
+    
+    # MEMORY.md — append entry if not already present
+    MEMORY_FILE="$OPENCLAW_WORKSPACE/MEMORY.md"
+    if [ -f "$MEMORY_FILE" ]; then
+        if ! grep -q "agent-swarm Go CLI is the standard tool" "$MEMORY_FILE" 2>/dev/null; then
+            echo "" >> "$MEMORY_FILE"
+            cat "$SKILL_DIR/MEMORY-ENTRY.md" >> "$MEMORY_FILE"
+            echo "✅ Appended agent-swarm entry to MEMORY.md"
+        else
+            echo "ℹ️  MEMORY.md already has agent-swarm entry"
+        fi
+    else
+        echo "⚠️  No MEMORY.md found — create one and add from skill/MEMORY-ENTRY.md"
     fi
     
     echo ""
