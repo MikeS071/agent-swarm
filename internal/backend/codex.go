@@ -167,6 +167,12 @@ func (b *CodexBackend) Kill(handle AgentHandle) error {
 func (b *CodexBackend) ListSessions(ctx context.Context) ([]string, error) {
 	out, err := b.runCmd(ctx, "tmux", "list-sessions", "-F", "#{session_name}")
 	if err != nil {
+		// tmux returns exit 1 when no server is running (zero sessions) — not an error
+		outStr := string(out)
+		errStr := err.Error()
+		if strings.Contains(outStr, "no server running") || strings.Contains(errStr, "exit status 1") {
+			return nil, nil
+		}
 		return nil, err
 	}
 	lines := strings.Split(string(out), "\n")
