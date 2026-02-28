@@ -78,6 +78,28 @@ func (b *CodexBackend) Spawn(ctx context.Context, cfg SpawnConfig) (AgentHandle,
 	sessionName := swarmSessionPrefix + cfg.TicketID
 	cmdStr := b.buildExecCommand(cfg)
 
+	// Wrap with agent-wrapper to auto-commit + update tracker on exit
+	if cfg.ProjectDir != "" {
+		// Look for wrapper next to agent-swarm binary, then PATH
+		candidates := []string{
+			filepath.Join(filepath.Dir(b.binary), "agent-wrapper.sh"),
+		}
+		if exe, err := os.Executable(); err == nil {
+			candidates = append(candidates, filepath.Join(filepath.Dir(exe), "agent-wrapper.sh"))
+		}
+		for _, wp := range candidates {
+			if _, serr := os.Stat(wp); serr == nil {
+				cmdStr = fmt.Sprintf("bash %s %s %s %s %s",
+					shQuote(wp),
+					shQuote(cfg.ProjectDir),
+					shQuote(cfg.WorkDir),
+					shQuote(cfg.TicketID),
+					cmdStr)
+				break
+			}
+		}
+	}
+
 	if _, err := b.runCmd(ctx, "tmux", "new-session", "-d", "-s", sessionName, cmdStr); err != nil {
 		return AgentHandle{}, err
 	}

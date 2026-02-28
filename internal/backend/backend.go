@@ -20,6 +20,7 @@ type SpawnConfig struct {
 	TicketID   string
 	Branch     string
 	WorkDir    string
+	ProjectDir string
 	PromptFile string
 	Model      string
 	Effort     string
