@@ -229,3 +229,97 @@ func sortedTicketIDs(tickets map[string]Ticket) []string {
 	sort.Strings(ids)
 	return ids
 }
+
+// Status constants for typed usage by dispatcher
+const (
+	StatusTodo    = "todo"
+	StatusRunning = "running"
+	StatusDone    = "done"
+	StatusFailed  = "failed"
+)
+
+// Get returns a ticket by ID
+func (t *Tracker) Get(id string) (Ticket, bool) {
+	tk, ok := t.Tickets[id]
+	return tk, ok
+}
+
+// AllDone returns true if every ticket is done
+func (t *Tracker) AllDone() bool {
+	for _, tk := range t.Tickets {
+		if tk.Status != StatusDone {
+			return false
+		}
+	}
+	return true
+}
+
+// RunningCount returns the number of running tickets
+func (t *Tracker) RunningCount() int {
+	n := 0
+	for _, tk := range t.Tickets {
+		if tk.Status == StatusRunning {
+			n++
+		}
+	}
+	return n
+}
+
+// MarkDone sets a ticket to done with optional SHA
+func (t *Tracker) MarkDone(id, sha string) error {
+	tk, ok := t.Tickets[id]
+	if !ok {
+		return fmt.Errorf("ticket %q not found", id)
+	}
+	tk.Status = StatusDone
+	tk.SHA = sha
+	t.Tickets[id] = tk
+	return nil
+}
+
+// MarkFailed sets a ticket to failed
+func (t *Tracker) MarkFailed(id string) error {
+	return t.SetStatus(id, StatusFailed)
+}
+
+// PhaseNumbers returns sorted unique phase numbers
+func (t *Tracker) PhaseNumbers() []int {
+	seen := map[int]bool{}
+	for _, tk := range t.Tickets {
+		seen[tk.Phase] = true
+	}
+	phases := make([]int, 0, len(seen))
+	for p := range seen {
+		phases = append(phases, p)
+	}
+	sort.Ints(phases)
+	return phases
+}
+
+// TicketsByPhase returns all tickets in a given phase
+func (t *Tracker) TicketsByPhase(phase int) map[string]Ticket {
+	result := make(map[string]Ticket)
+	for id, tk := range t.Tickets {
+		if tk.Phase == phase {
+			result[id] = tk
+		}
+	}
+	return result
+}
+
+// New creates a Tracker from a map of tickets (for testing/programmatic use)
+func New(project string, tickets map[string]Ticket) *Tracker {
+	return &Tracker{
+		Project: project,
+		Tickets: tickets,
+	}
+}
+
+// NewFromPtrs creates a Tracker from pointer map (convenience for tests)
+func NewFromPtrs(project string, tickets map[string]*Ticket) *Tracker {
+	m := make(map[string]Ticket, len(tickets))
+	for k, v := range tickets {
+		m[k] = *v
+	}
+	return &Tracker{Project: project, Tickets: m}
+}

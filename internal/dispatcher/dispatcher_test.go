@@ -12,7 +12,7 @@ func testCfg(maxAgents int) *config.Config {
 }
 
 func testTracker() *tracker.Tracker {
-	return tracker.New("proj", map[string]*tracker.Ticket{
+	return tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
 		"a": {Status: tracker.StatusTodo, Phase: 1},
 		"b": {Status: tracker.StatusTodo, Phase: 1, Depends: []string{"a"}},
 		"c": {Status: tracker.StatusTodo, Phase: 2, Depends: []string{"b"}},
@@ -34,7 +34,7 @@ func TestEvaluateSpawnableInCurrentPhase(t *testing.T) {
 }
 
 func TestEvaluateBlockedWhenNoSpawnable(t *testing.T) {
-	tr := tracker.New("proj", map[string]*tracker.Ticket{
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
 		"a": {Status: tracker.StatusRunning, Phase: 1},
 		"b": {Status: tracker.StatusTodo, Phase: 1, Depends: []string{"a"}},
 	})
@@ -51,7 +51,7 @@ func TestEvaluateBlockedWhenNoSpawnable(t *testing.T) {
 }
 
 func TestPhaseGateDetection(t *testing.T) {
-	tr := tracker.New("proj", map[string]*tracker.Ticket{
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
 		"a": {Status: tracker.StatusDone, Phase: 1},
 		"b": {Status: tracker.StatusDone, Phase: 1},
 		"c": {Status: tracker.StatusTodo, Phase: 2},
@@ -94,7 +94,7 @@ func TestMarkDoneChainsAndUnblocks(t *testing.T) {
 }
 
 func TestApprovePhaseGateFlow(t *testing.T) {
-	tr := tracker.New("proj", map[string]*tracker.Ticket{
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
 		"a": {Status: tracker.StatusDone, Phase: 1},
 		"b": {Status: tracker.StatusTodo, Phase: 2},
 		"c": {Status: tracker.StatusTodo, Phase: 2, Depends: []string{"b"}},
@@ -119,7 +119,7 @@ func TestApprovePhaseGateFlow(t *testing.T) {
 }
 
 func TestEvaluateAllDone(t *testing.T) {
-	tr := tracker.New("proj", map[string]*tracker.Ticket{
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
 		"a": {Status: tracker.StatusDone, Phase: 1},
 		"b": {Status: tracker.StatusDone, Phase: 2},
 	})
@@ -135,7 +135,7 @@ func TestEvaluateAllDone(t *testing.T) {
 }
 
 func TestCanSpawnMoreRespectsMaxAndRAM(t *testing.T) {
-	tr := tracker.New("proj", map[string]*tracker.Ticket{
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
 		"a": {Status: tracker.StatusRunning, Phase: 1},
 		"b": {Status: tracker.StatusTodo, Phase: 1},
 	})
@@ -154,7 +154,7 @@ func TestCanSpawnMoreRespectsMaxAndRAM(t *testing.T) {
 }
 
 func TestNextSpawnableLimit(t *testing.T) {
-	tr := tracker.New("proj", map[string]*tracker.Ticket{
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
 		"a": {Status: tracker.StatusTodo, Phase: 1},
 		"b": {Status: tracker.StatusTodo, Phase: 1},
 		"c": {Status: tracker.StatusTodo, Phase: 1},
