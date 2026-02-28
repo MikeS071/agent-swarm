@@ -1,0 +1,46 @@
+version: 2
+
+project_name: swarm
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: swarm
+    main: .
+    binary: swarm
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: default
+    builds:
+      - swarm
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+release:
+  github:
+    owner: MikeS071
+    name: agent-swarm

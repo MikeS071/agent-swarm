@@ -23,6 +23,12 @@ type fakeBackend struct {
 	alive      map[string]bool
 }
 
+type fakeSessionBackend struct {
+	fakeBackend
+	sessions []string
+	err      error
+}
+
 func (f *fakeBackend) Spawn(_ context.Context, cfg backend.SpawnConfig) (backend.AgentHandle, error) {
 	f.spawnCalls = append(f.spawnCalls, cfg)
 	session := "swarm-" + cfg.TicketID
@@ -50,6 +56,10 @@ func (f *fakeBackend) HasExited(h backend.AgentHandle) bool {
 func (f *fakeBackend) GetOutput(backend.AgentHandle, int) (string, error) { return "", nil }
 func (f *fakeBackend) Kill(backend.AgentHandle) error                     { return nil }
 func (f *fakeBackend) Name() string                                       { return "fake" }
+
+func (f *fakeSessionBackend) ListSessions(context.Context) ([]string, error) {
+	return f.sessions, f.err
+}
 
 type fakeNotifier struct {
 	alerts []string
@@ -279,6 +289,42 @@ func TestEventLogAppendJSONL(t *testing.T) {
 	}
 	if ev.Type != "ticket_spawned" || ev.Ticket != "sw-01" {
 		t.Fatalf("unexpected event: %#v", ev)
+	}
+}
+
+func TestWatchdogHelpers(t *testing.T) {
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-01": {Status: tracker.StatusRunning, StartedAt: time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339)},
+		"sw-02": {Status: tracker.StatusTodo},
+	})
+
+	cfg := config.Default()
+	cfg.Watchdog.MaxRetries = 3
+	cfg.Watchdog.MaxRuntime = "1m"
+
+	w := New(cfg, tr, nil, &fakeBackend{alive: map[string]bool{"swarm-sw-01": true}}, worktree.New(t.TempDir(), filepath.Join(t.TempDir(), "wts"), "main"), &fakeNotifier{})
+	if got := w.maxRetries(); got != 3 {
+		t.Fatalf("maxRetries() = %d, want 3", got)
+	}
+	if !w.runtimeExceeded(tr.Tickets["sw-01"].StartedAt) {
+		t.Fatalf("runtimeExceeded should be true for startedAt older than max runtime")
+	}
+	if w.runtimeExceeded("invalid") {
+		t.Fatalf("runtimeExceeded should be false for invalid timestamps")
+	}
+}
+
+func TestRunningAgentCountUsesSessionLister(t *testing.T) {
+	w := &Watchdog{
+		backend: &fakeSessionBackend{sessions: []string{"swarm-a", "swarm-b"}},
+		tracker: tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{}),
+	}
+	count, err := w.runningAgentCount(context.Background())
+	if err != nil {
+		t.Fatalf("runningAgentCount() error = %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("runningAgentCount() = %d, want 2", count)
 	}
 }
 
