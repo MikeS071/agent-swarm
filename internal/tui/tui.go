@@ -57,6 +57,7 @@ type model struct {
 	compact  bool
 	width    int
 	height   int
+	scrollOff int
 
 	projects     []projectContext
 	projectIndex int
@@ -293,9 +294,29 @@ func (m model) renderList() string {
 	b.WriteString(fmt.Sprintf("Progress: %s %d/%d (%d%%)\n", renderBarOnly(done, total, 24), done, total, pct))
 	b.WriteString(fmt.Sprintf("Phase: %d | Agents: %d/%d | RAM: %s\n", phase, stats.Running, m.config.Project.MaxAgents, ramText))
 	b.WriteString(strings.Repeat("-", maxInt(20, m.width-2)) + "\n")
-	for i, row := range m.tickets {
+	// Scrollable ticket list — reserve 6 lines for header/footer
+	maxVisible := m.height - 6
+	if maxVisible < 5 {
+		maxVisible = len(m.tickets) // fallback: show all
+	}
+	// Adjust scroll offset to keep cursor visible
+	if m.cursor < m.scrollOff {
+		m.scrollOff = m.cursor
+	}
+	if m.cursor >= m.scrollOff+maxVisible {
+		m.scrollOff = m.cursor - maxVisible + 1
+	}
+	end := m.scrollOff + maxVisible
+	if end > len(m.tickets) {
+		end = len(m.tickets)
+	}
+	for i := m.scrollOff; i < end; i++ {
+		row := m.tickets[i]
 		line := renderTicketRow(row, i == m.cursor, m.compact, m.width)
 		b.WriteString(line + "\n")
+	}
+	if len(m.tickets) > maxVisible {
+		b.WriteString(fmt.Sprintf("  (%d/%d shown, scroll with ↑↓)\n", maxVisible, len(m.tickets)))
 	}
 	b.WriteString("q: quit | Enter: view output | k: kill | r: respawn | g: approve gate | p: project | Tab: compact")
 	if m.lastErr != nil {
