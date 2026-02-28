@@ -3,10 +3,12 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
@@ -19,6 +21,7 @@ var statusProject string
 var statusJSON bool
 var statusWatch bool
 var statusCompact bool
+var statusLive bool
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
@@ -39,6 +42,9 @@ var statusCmd = &cobra.Command{
 		if statusProject != "" && statusProject != tr.Project {
 			return fmt.Errorf("project %q not found (tracker project is %q)", statusProject, tr.Project)
 		}
+		if statusLive {
+			return runLiveStatus(cfgFile, cfg)
+		}
 		if statusJSON {
 			return printStatusJSON(tr)
 		}
@@ -56,6 +62,7 @@ func init() {
 	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "output json")
 	statusCmd.Flags().BoolVar(&statusWatch, "watch", false, "run live dashboard")
 	statusCmd.Flags().BoolVar(&statusCompact, "compact", false, "compact output")
+	statusCmd.Flags().BoolVar(&statusLive, "live", false, "live updating display (like top)")
 	rootCmd.AddCommand(statusCmd)
 }
 
@@ -137,6 +144,70 @@ func colorStatus(status string) string {
 		return color.New(color.FgMagenta).Sprint(status)
 	default:
 		return status
+	}
+}
+
+func runLiveStatus(cfgFile string, cfg *config.Config) error {
+	trackerPath := resolveFromConfig(cfgFile, cfg.Project.Tracker)
+	for {
+		tr, err := tracker.Load(trackerPath)
+		if err != nil {
+			return err
+		}
+
+		// Clear screen
+		fmt.Fprint(os.Stdout, "[H[2J")
+
+		// Header
+		now := time.Now().Format("15:04:05")
+		fmt.Fprintf(os.Stdout, "agent-swarm status — %s (refresh 1s, q to quit)\n\n", now)
+
+		// Stats bar
+		stats := tr.Stats()
+		fmt.Fprintf(os.Stdout, "Project: %s  |  Phase: %d  |  ",
+			color.New(color.Bold).Sprint(tr.Project), tr.ActivePhase())
+		fmt.Fprintf(os.Stdout, "%s %s %s %s  |  Total: %d\n\n",
+			color.New(color.FgGreen).Sprintf("✅%d", stats.Done),
+			color.New(color.FgYellow).Sprintf("🔄%d", stats.Running),
+			color.New(color.FgWhite).Sprintf("📋%d", stats.Todo),
+			color.New(color.FgRed).Sprintf("❌%d", stats.Failed),
+			stats.Total)
+
+		// Progress bar
+		if stats.Total > 0 {
+			pct := float64(stats.Done) / float64(stats.Total) * 100
+			barWidth := 40
+			filled := int(float64(barWidth) * float64(stats.Done) / float64(stats.Total))
+			bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+			fmt.Fprintf(os.Stdout, "  [%s] %.0f%%\n\n", color.New(color.FgGreen).Sprint(bar), pct)
+		}
+
+		// Table
+		w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tPHASE\tSTATUS\tDEPENDS\tDESC")
+		fmt.Fprintln(w, "──\t─────\t──────\t───────\t────")
+
+		ids := make([]string, 0, len(tr.Tickets))
+		for id := range tr.Tickets {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			t := tr.Tickets[id]
+			status := colorStatus(t.Status)
+			deps := strings.Join(t.Depends, ",")
+			if deps == "" {
+				deps = "-"
+			}
+			desc := t.Desc
+			if len(desc) > 60 {
+				desc = desc[:57] + "..."
+			}
+			fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\n", id, t.Phase, status, deps, desc)
+		}
+		_ = w.Flush()
+
+		time.Sleep(1 * time.Second)
 	}
 }
 
