@@ -84,7 +84,8 @@ type Watchdog struct {
 	dryRun      bool
 	retries     map[string]int
 	stuckAlerts map[string]bool
-	gateNoticed bool
+	gateNoticed    bool
+	completionSent bool
 }
 
 // New creates a watchdog instance.
@@ -288,7 +289,55 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		w.gateNoticed = false
 	}
 
+	if sig == dispatcher.SignalAllDone && !w.completionSent {
+		w.completionSent = true
+		report := w.buildCompletionReport()
+		if err := w.appendEvent("project_complete", "", nil); err != nil {
+			return err
+		}
+		_ = w.notifier.Alert(ctx, report)
+	}
+
 	return nil
+}
+
+func (w *Watchdog) buildCompletionReport() string {
+	stats := w.tracker.Stats()
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("🏁 *Project Complete: %s*\n\n", w.tracker.Project))
+	b.WriteString(fmt.Sprintf("✅ Done: %d | ❌ Failed: %d | Total: %d\n\n", stats.Done, stats.Failed, stats.Total))
+
+	// List all tickets with status
+	ids := make([]string, 0, len(w.tracker.Tickets))
+	for id := range w.tracker.Tickets {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	b.WriteString("*Tickets:*\n")
+	for _, id := range ids {
+		tk := w.tracker.Tickets[id]
+		icon := "✅"
+		if tk.Status == "failed" {
+			icon = "❌"
+		}
+		sha := ""
+		if tk.SHA != "" && len(tk.SHA) >= 7 {
+			sha = " (" + tk.SHA[:7] + ")"
+		}
+		b.WriteString(fmt.Sprintf("%s %s%s — %s\n", icon, id, sha, tk.Desc))
+	}
+
+	if stats.Failed > 0 {
+		b.WriteString("\n⚠️ *Failed tickets need manual review*")
+	} else {
+		b.WriteString("\n*Next steps:*\n")
+		b.WriteString("• Merge all branches to main\n")
+		b.WriteString("• Run full test suite: `go test ./...`\n")
+		b.WriteString("• Build + install: `go install`\n")
+		b.WriteString("• Push to GitHub")
+	}
+	return b.String()
 }
 
 // SpawnTicket creates a worktree and launches an agent for ticketID.
