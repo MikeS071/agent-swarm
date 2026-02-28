@@ -191,36 +191,8 @@ func runLiveStatus(cfgFile string, cfg *config.Config) error {
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
-
-		// Group done tickets by phase into summary lines
-		doneByPhase := make(map[int][]string)
 		for _, id := range ids {
 			t := tr.Tickets[id]
-			if t.Status == "done" {
-				doneByPhase[t.Phase] = append(doneByPhase[t.Phase], id)
-			}
-		}
-		// Print done phase summaries
-		donePhases := make([]int, 0)
-		for p := range doneByPhase {
-			donePhases = append(donePhases, p)
-		}
-		sort.Ints(donePhases)
-		for _, p := range donePhases {
-			tids := doneByPhase[p]
-			summary := strings.Join(tids, ", ")
-			fmt.Fprintf(os.Stdout, "%-8s %5d  %s %s\n",
-				fmt.Sprintf("P%d", p), p,
-				color.New(color.FgGreen).Sprintf("✅ done   "),
-				color.New(color.Faint).Sprintf("%d tickets: %s", len(tids), summary))
-		}
-
-		// Print non-done tickets in full
-		for _, id := range ids {
-			t := tr.Tickets[id]
-			if t.Status == "done" {
-				continue
-			}
 			rawStatus := t.Status
 			coloredStatus := colorStatus(rawStatus)
 			pad := 10 - len(rawStatus)
