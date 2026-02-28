@@ -182,10 +182,9 @@ func runLiveStatus(cfgFile string, cfg *config.Config) error {
 			fmt.Fprintf(os.Stdout, "  [%s] %.0f%%\n\n", color.New(color.FgGreen).Sprint(bar), pct)
 		}
 
-		// Table
-		w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tPHASE\tSTATUS\tDEPENDS\tDESC")
-		fmt.Fprintln(w, "──\t─────\t──────\t───────\t────")
+		// Table — use fixed-width printf to avoid color code misalignment
+		fmt.Fprintf(os.Stdout, "%-8s %5s  %-10s %-18s %s\n", "ID", "PHASE", "STATUS", "DEPENDS", "DESC")
+		fmt.Fprintf(os.Stdout, "%-8s %5s  %-10s %-18s %s\n", "──", "─────", "──────", "───────", "────")
 
 		ids := make([]string, 0, len(tr.Tickets))
 		for id := range tr.Tickets {
@@ -194,18 +193,27 @@ func runLiveStatus(cfgFile string, cfg *config.Config) error {
 		sort.Strings(ids)
 		for _, id := range ids {
 			t := tr.Tickets[id]
-			status := colorStatus(t.Status)
+			rawStatus := t.Status
+			coloredStatus := colorStatus(rawStatus)
+			// Pad to 10 chars using raw length (color codes don't count)
+			pad := 10 - len(rawStatus)
+			if pad < 0 {
+				pad = 0
+			}
+			paddedStatus := coloredStatus + strings.Repeat(" ", pad)
 			deps := strings.Join(t.Depends, ",")
 			if deps == "" {
 				deps = "-"
 			}
-			desc := t.Desc
-			if len(desc) > 60 {
-				desc = desc[:57] + "..."
+			if len(deps) > 18 {
+				deps = deps[:15] + "..."
 			}
-			fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\n", id, t.Phase, status, deps, desc)
+			desc := t.Desc
+			if len(desc) > 55 {
+				desc = desc[:52] + "..."
+			}
+			fmt.Fprintf(os.Stdout, "%-8s %5d  %s %-18s %s\n", id, t.Phase, paddedStatus, deps, desc)
 		}
-		_ = w.Flush()
 
 		time.Sleep(1 * time.Second)
 	}
