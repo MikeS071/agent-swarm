@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/MikeS071/agent-swarm/internal/backend"
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
 	"github.com/MikeS071/agent-swarm/internal/server"
@@ -96,14 +95,6 @@ var serveCmd = &cobra.Command{
 	},
 }
 
-func buildBackend(cfg *config.Config) (backend.AgentBackend, error) {
-	switch cfg.Backend.Type {
-	case "", "codex-tmux":
-		return backend.NewCodexBackend(cfg.Backend.Binary, cfg.Backend.BypassSandbox), nil
-	default:
-		return nil, fmt.Errorf("unsupported backend type %q", cfg.Backend.Type)
-	}
-}
 
 func parseWatchInterval(raw string) time.Duration {
 	if raw == "" {
