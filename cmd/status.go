@@ -10,17 +10,24 @@ import (
 
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
+	"github.com/MikeS071/agent-swarm/internal/tui"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
 var statusProject string
 var statusJSON bool
+var statusWatch bool
+var statusCompact bool
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show tracker status",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if statusWatch {
+			return tui.Run(cfgFile, statusProject, statusCompact)
+		}
+
 		cfg, err := config.Load(cfgFile)
 		if err != nil {
 			return err
@@ -35,6 +42,10 @@ var statusCmd = &cobra.Command{
 		if statusJSON {
 			return printStatusJSON(tr)
 		}
+		if statusCompact {
+			printStatusCompact(tr)
+			return nil
+		}
 		printStatusTable(tr)
 		return nil
 	},
@@ -43,6 +54,8 @@ var statusCmd = &cobra.Command{
 func init() {
 	statusCmd.Flags().StringVar(&statusProject, "project", "", "project name")
 	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "output json")
+	statusCmd.Flags().BoolVar(&statusWatch, "watch", false, "run live dashboard")
+	statusCmd.Flags().BoolVar(&statusCompact, "compact", false, "compact output")
 	rootCmd.AddCommand(statusCmd)
 }
 
@@ -97,6 +110,19 @@ func printStatusTable(tr *tracker.Tracker) {
 		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%s\n", id, t.Phase, status, t.Branch, strings.Join(t.Depends, ","), t.Desc)
 	}
 	_ = w.Flush()
+}
+
+func printStatusCompact(tr *tracker.Tracker) {
+	ids := make([]string, 0, len(tr.Tickets))
+	for id := range tr.Tickets {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	for _, id := range ids {
+		t := tr.Tickets[id]
+		fmt.Fprintf(color.Output, "%s\t%s\tp%d\t%s\n", id, t.Status, t.Phase, t.Desc)
+	}
 }
 
 func colorStatus(status string) string {
