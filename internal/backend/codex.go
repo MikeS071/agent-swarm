@@ -129,7 +129,8 @@ func (b *CodexBackend) IsAlive(handle AgentHandle) bool {
 
 func (b *CodexBackend) HasExited(handle AgentHandle) bool {
 	if !b.IsAlive(handle) {
-		return false
+		// Session gone entirely — the agent has exited
+		return true
 	}
 	out, err := b.runCmd(context.Background(), "tmux", "list-panes", "-t", handle.SessionName, "-F", "#{pane_pid}")
 	if err != nil {

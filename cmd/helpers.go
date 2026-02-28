@@ -22,7 +22,7 @@ func buildBackend(cfg *config.Config) (backend.AgentBackend, error) {
 func buildNotifier(cfg *config.Config) notify.Notifier {
 	switch strings.TrimSpace(cfg.Notifications.Type) {
 	case "telegram":
-		return notify.NewTelegramNotifier()
+		return notify.NewTelegramNotifier(cfg.Notifications.TelegramToken, cfg.Notifications.TelegramChatID)
 	default:
 		return notify.NewStdoutNotifier(os.Stdout)
 	}
