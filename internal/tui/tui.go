@@ -294,8 +294,13 @@ func (m model) renderList() string {
 	b.WriteString(fmt.Sprintf("Progress: %s %d/%d (%d%%)\n", renderBarOnly(done, total, 24), done, total, pct))
 	b.WriteString(fmt.Sprintf("Phase: %d | Agents: %d/%d | RAM: %s\n", phase, stats.Running, m.config.Project.MaxAgents, ramText))
 	b.WriteString(strings.Repeat("-", maxInt(20, m.width-2)) + "\n")
+	// Auto-compact if tickets exceed terminal height (6 lines reserved for header/footer)
+	useCompact := m.compact
+	if m.height > 0 && len(m.tickets)+6 > m.height {
+		useCompact = true
+	}
 	for i, row := range m.tickets {
-		line := renderTicketRow(row, i == m.cursor, m.compact, m.width)
+		line := renderTicketRow(row, i == m.cursor, useCompact, m.width)
 		b.WriteString(line + "\n")
 	}
 	b.WriteString("q: quit | Enter: view output | k: kill | r: respawn | g: approve gate | p: project | Tab: compact")
