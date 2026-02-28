@@ -77,7 +77,7 @@
       "commitSha": "7088136"
     },
     "sw-09": {
-      "status": "todo",
+      "status": "done",
       "phase": 3,
       "depends": [
         "sw-05",
@@ -86,7 +86,10 @@
         "sw-08"
       ],
       "branch": "feat/sw-09",
-      "desc": "Final audit \u2014 build, test all, verify CLI commands, README, go install path"
+      "desc": "Final audit \u2014 build, test all, verify CLI commands, README, go install path",
+      "ghost_count": 1,
+      "label": "codex-sw-09",
+      "commitSha": "9678041"
     }
   },
   "maxConcurrent": 4
