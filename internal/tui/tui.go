@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"io/fs"
 	"path/filepath"
 	"sort"
@@ -465,6 +467,28 @@ func discoverProjects(preferredConfig string) ([]projectContext, error) {
 		}
 		return nil
 	})
+	// Also scan workspace projects.json registry
+	registryPaths := []string{
+		filepath.Join(os.Getenv("HOME"), ".openclaw", "workspace", "swarm", "projects.json"),
+	}
+	for _, rp := range registryPaths {
+		data, err := os.ReadFile(rp)
+		if err != nil {
+			continue
+		}
+		var registry map[string]struct {
+			Repo string `json:"repo"`
+		}
+		if json.Unmarshal(data, &registry) != nil {
+			continue
+		}
+		for _, proj := range registry {
+			if proj.Repo != "" {
+				add(filepath.Join(proj.Repo, "swarm.toml"))
+			}
+		}
+	}
+
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].name < result[j].name
 	})
