@@ -60,6 +60,7 @@ func newTestServer(t *testing.T) *Server {
 	cfg.Project.Name = "test"
 	cfg.Project.Repo = "."
 	cfg.Project.PromptDir = "swarm/prompts"
+	cfg.Project.Tracker = ""
 	cfg.Backend.Model = "gpt-5.3-codex"
 	cfg.Backend.Effort = "high"
 	cfg.Serve.CORS = []string{"*"}
