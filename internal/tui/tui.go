@@ -495,6 +495,15 @@ func discoverProjects(preferredConfig string) ([]projectContext, error) {
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].name < result[j].name
 	})
+	// Move preferred config (current dir) to front
+	if abs, err := filepath.Abs(preferredConfig); err == nil {
+		for i, p := range result {
+			if p.configPath == abs && i > 0 {
+				result = append([]projectContext{p}, append(result[:i], result[i+1:]...)...)
+				break
+			}
+		}
+	}
 	return result, nil
 }
 
