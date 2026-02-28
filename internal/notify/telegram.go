@@ -24,11 +24,11 @@ func NewTelegramNotifier(token, chatID string) *TelegramNotifier {
 }
 
 func (n *TelegramNotifier) Alert(ctx context.Context, msg string) error {
-	return n.send(ctx, "🚨 "+msg)
+	return n.send(ctx, "🚨 *Agent-Swarm Watchdog*\n"+msg)
 }
 
 func (n *TelegramNotifier) Info(ctx context.Context, msg string) error {
-	return n.send(ctx, msg)
+	return n.send(ctx, "🤖 *Agent-Swarm Watchdog*\n"+msg)
 }
 
 func (n *TelegramNotifier) send(_ context.Context, text string) error {
