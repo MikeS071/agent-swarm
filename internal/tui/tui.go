@@ -293,9 +293,40 @@ func (m model) renderList() string {
 	b.WriteString(fmt.Sprintf("Progress: %s %d/%d (%d%%)\n", renderBarOnly(done, total, 24), done, total, pct))
 	b.WriteString(fmt.Sprintf("Phase: %d | Agents: %d/%d | RAM: %s\n", phase, stats.Running, m.config.Project.MaxAgents, ramText))
 	b.WriteString(strings.Repeat("-", maxInt(20, m.width-2)) + "\n")
+
+	// Collapse done phases into summary lines, show non-done individually
+	doneByPhase := make(map[int][]string)
+	for _, row := range m.tickets {
+		if row.Status == "done" {
+			phase := 0
+			if tk, ok := m.tracker.Tickets[row.ID]; ok {
+				phase = tk.Phase
+			}
+			doneByPhase[phase] = append(doneByPhase[phase], row.ID)
+		}
+	}
+	donePhases := make([]int, 0, len(doneByPhase))
+	for p := range doneByPhase {
+		donePhases = append(donePhases, p)
+	}
+	sort.Ints(donePhases)
+	for _, p := range donePhases {
+		tids := doneByPhase[p]
+		summary := fmt.Sprintf("✅ Phase %d  (%d done: %s)", p, len(tids), strings.Join(tids, ", "))
+		style := lipgloss.NewStyle().Faint(true)
+		b.WriteString(style.Render(summary) + "\n")
+	}
+
+	// Render non-done tickets with cursor support
+	visibleIdx := 0
 	for i, row := range m.tickets {
-		line := renderTicketRow(row, i == m.cursor, m.compact, m.width)
+		if row.Status == "done" {
+			continue
+		}
+		selected := i == m.cursor
+		line := renderTicketRow(row, selected, m.compact, m.width)
 		b.WriteString(line + "\n")
+		visibleIdx++
 	}
 	b.WriteString("q: quit | Enter: view output | k: kill | r: respawn | g: approve gate | p: project | Tab: compact")
 	if m.lastErr != nil {
