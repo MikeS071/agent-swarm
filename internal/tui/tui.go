@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"io/fs"
 	"path/filepath"
 	"sort"
@@ -544,13 +545,33 @@ func (m *model) respawnSelected() {
 		return
 	}
 	proj := m.projects[m.projectIndex]
-	workdir := absOrJoin(proj.configDir, m.config.Project.Repo)
-	prompt := filepath.Join(absOrJoin(proj.configDir, m.config.Project.PromptDir), id+".md")
+	repoDir := absOrJoin(proj.configDir, m.config.Project.Repo)
+	// Worktree dir: <repo>-worktrees/<ticketID>
+	worktreeDir := repoDir + "-worktrees/" + id
+	promptSrc := filepath.Join(absOrJoin(proj.configDir, m.config.Project.PromptDir), id+".md")
+
+	// Ensure worktree exists (recreate if needed)
+	if _, serr := os.Stat(worktreeDir); os.IsNotExist(serr) {
+		// Remove stale branch and create fresh worktree
+		exec.Command("git", "-C", repoDir, "branch", "-D", tk.Branch).Run()
+		exec.Command("git", "-C", repoDir, "worktree", "prune").Run()
+		out, werr := exec.Command("git", "-C", repoDir, "worktree", "add", "-b", tk.Branch, worktreeDir, m.config.Project.BaseBranch).CombinedOutput()
+		if werr != nil {
+			m.lastErr = fmt.Errorf("worktree: %s: %w", strings.TrimSpace(string(out)), werr)
+			return
+		}
+	}
+
+	// Copy prompt to worktree
+	if pdata, rerr := os.ReadFile(promptSrc); rerr == nil {
+		_ = os.WriteFile(filepath.Join(worktreeDir, ".codex-prompt.md"), pdata, 0644)
+	}
+
 	_, err := m.backend.Spawn(context.Background(), backend.SpawnConfig{
 		TicketID:   id,
 		Branch:     tk.Branch,
-		WorkDir:    workdir,
-		PromptFile: prompt,
+		WorkDir:    worktreeDir,
+		PromptFile: filepath.Join(worktreeDir, ".codex-prompt.md"),
 		Model:      m.config.Backend.Model,
 		Effort:     m.config.Backend.Effort,
 	})
