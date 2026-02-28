@@ -1,0 +1,190 @@
+# Agent Swarm — User Guide
+
+## What is Agent Swarm?
+
+Agent Swarm is a Go CLI that orchestrates parallel coding agents across isolated git worktrees. You define tickets with dependencies and phases, and the swarm handles spawning agents, tracking progress, detecting completions, chaining dependent work, and alerting you at phase gates.
+
+Think of it as a CI system for AI coding agents — except instead of running tests, it runs agents that write code.
+
+## Installation
+
+```bash
+go install github.com/MikeS071/agent-swarm@latest
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/MikeS071/agent-swarm.git
+cd agent-swarm
+go build -o agent-swarm .
+mv agent-swarm ~/.local/bin/
+```
+
+## Getting Started
+
+### 1. Initialize a project
+
+```bash
+cd ~/projects/my-app
+swarm init my-app
+```
+
+This creates:
+- `swarm.toml` — project configuration
+- `swarm/tracker.json` — ticket state (the source of truth)
+- `swarm/prompts/` — directory for agent prompt files
+
+### 2. Define your tickets
+
+```bash
+# Phase 1 — no dependencies, can run in parallel
+swarm add-ticket feat-01 --phase 1 --desc "Database schema and migrations"
+swarm add-ticket feat-02 --phase 1 --desc "Authentication with JWT"
+swarm add-ticket feat-03 --phase 1 --desc "REST API scaffold"
+
+# Phase 2 — depends on Phase 1 tickets
+swarm add-ticket feat-04 --phase 2 --deps feat-01,feat-02 --desc "User CRUD endpoints"
+swarm add-ticket feat-05 --phase 2 --deps feat-01,feat-03 --desc "API middleware + validation"
+
+# Phase 3 — final audit
+swarm add-ticket feat-06 --phase 3 --deps feat-04,feat-05 --desc "Integration tests + README"
+```
+
+### 3. Write prompts
+
+Each ticket needs a prompt file at `swarm/prompts/<ticket-id>.md`. This is what the AI agent receives as its task.
+
+```bash
+swarm prompts check       # shows which tickets are missing prompts
+swarm prompts gen feat-01 # creates a template prompt
+```
+
+A good prompt includes:
+- **Context** — what the project is, what exists already
+- **Scope** — exactly what this ticket should build (files, functions, interfaces)
+- **Tests** — what tests to write first (TDD)
+- **Deliverables** — build passes, tests pass, commit message format
+
+### 4. Configure your backend
+
+Edit `swarm.toml`:
+
+```toml
+[backend]
+type = "codex-tmux"           # currently supported: codex-tmux
+model = "gpt-5.3-codex"       # model to use
+bypass_sandbox = true          # --dangerously-bypass-approvals-and-sandbox
+```
+
+### 5. Start the watchdog
+
+```bash
+swarm watch              # long-running daemon (default 5m interval)
+swarm watch --once       # single pass (good for cron)
+swarm watch --dry-run    # preview without executing
+```
+
+The watchdog:
+1. Detects when agents exit with commits → marks them done
+2. Auto-spawns the next unblocked tickets
+3. Respawns agents that exit without commits (once — fails on second attempt)
+4. Alerts on stuck agents (exceeding max runtime)
+5. Stops at phase gates and notifies you
+
+### 6. Monitor progress
+
+```bash
+swarm status             # quick table
+swarm status --json      # machine-readable
+swarm status --watch     # live TUI dashboard
+```
+
+TUI keybindings:
+| Key | Action |
+|---|---|
+| `↑`/`↓` | Navigate tickets |
+| `Enter` | View agent's live output |
+| `Esc` | Back to list |
+| `k` | Kill selected agent |
+| `r` | Respawn selected agent |
+| `g` | Approve phase gate |
+| `p` | Switch project |
+| `Tab` | Toggle compact/detailed view |
+| `q` | Quit |
+
+### 7. Phase gates
+
+When all tickets in a phase complete, the watchdog stops and waits:
+
+```bash
+swarm status    # review completed work
+swarm go        # approve → next phase auto-spawns
+```
+
+### 8. Integration
+
+After all tickets complete, merge branches in dependency order:
+
+```bash
+swarm integrate --dry-run                        # preview merge plan
+swarm integrate --base main --branch integration/v1  # execute
+swarm integrate --continue                       # resume after conflict resolution
+```
+
+On conflict, the CLI stops and shows exactly which files conflict and how to resolve.
+
+### 9. System service
+
+```bash
+swarm install                  # auto-detect platform, install watchdog
+swarm install --interval 3m    # custom interval
+swarm install --uninstall      # remove cleanly
+```
+
+Supports: systemd (Linux), launchd (macOS), cron (fallback).
+
+## Concepts
+
+### Tickets
+A unit of work with: ID, phase, dependencies, status (`todo` → `running` → `done`/`failed`), and a git branch.
+
+### Phases
+Sequential groups. All tickets within a phase run in parallel. Phase N+1 starts only after Phase N is complete and approved.
+
+### Dispatcher Signals
+| Signal | Meaning |
+|---|---|
+| (spawn) | Spawnable tickets exist → auto-spawn |
+| PHASE_GATE | Phase complete → waiting for `swarm go` |
+| ALL_DONE | Project complete 🏁 |
+| BLOCKED | No spawnable tickets, deps incomplete |
+
+### Worktrees
+Each agent gets an isolated git worktree — a separate checkout on its own branch. Agents never conflict with each other. Branches merge via `swarm integrate`.
+
+### Progress Tracking
+**Primary:** Agents output `PROGRESS: X/N` lines → parsed into progress bars.
+**Fallback:** Heuristic from file changes (30%), build output (70%), git commit (90%), exit with commits (100%).
+
+## HTTP API
+
+```bash
+swarm serve --port 8090
+```
+
+Key endpoints:
+- `GET /api/projects` — list projects
+- `GET /api/projects/:name/tickets` — tickets with progress
+- `GET /api/events` — SSE real-time event stream
+- `POST /api/projects/:name/tickets/:id/kill` — kill agent
+- `POST /api/projects/:name/phase-gate/approve` — approve gate
+
+## Tips
+
+- **Start small:** 2-3 tickets in Phase 1 to validate before scaling to 7 agents
+- **Prompt quality matters:** Well-scoped prompts with clear deliverables beat vague ones
+- **TDD in prompts:** Tell agents to write tests first — makes completion detection reliable
+- **Monitor RAM:** Set `min_ram_mb` — watchdog won't spawn below threshold
+- **Phase gates are checkpoints:** Review, test, catch issues before building on them
+- **One commit per ticket:** Simplifies integration
