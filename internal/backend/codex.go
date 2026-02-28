@@ -1,0 +1,181 @@
+package backend
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const swarmSessionPrefix = "swarm-"
+
+// CodexBackend implements AgentBackend using tmux sessions.
+type CodexBackend struct {
+	binary        string
+	bypassSandbox bool
+	runCmd        func(ctx context.Context, name string, args ...string) ([]byte, error)
+	now           func() time.Time
+}
+
+// NewCodexBackend creates a codex tmux backend.
+func NewCodexBackend(binary string, bypassSandbox bool) *CodexBackend {
+	return newCodexBackendWithDeps(binary, bypassSandbox, exec.LookPath, os.UserHomeDir, defaultRunner, time.Now)
+}
+
+func newCodexBackendWithDeps(
+	binary string,
+	bypassSandbox bool,
+	lookPath func(string) (string, error),
+	homeDir func() (string, error),
+	runner func(ctx context.Context, name string, args ...string) ([]byte, error),
+	now func() time.Time,
+) *CodexBackend {
+	resolved := strings.TrimSpace(binary)
+	if resolved == "" {
+		if lookPath != nil {
+			if p, err := lookPath("codex"); err == nil && p != "" {
+				resolved = p
+			}
+		}
+		if resolved == "" && homeDir != nil {
+			if h, err := homeDir(); err == nil && h != "" {
+				resolved = filepath.Join(h, ".local", "bin", "codex")
+			}
+		}
+		if resolved == "" {
+			resolved = "codex"
+		}
+	}
+	if runner == nil {
+		runner = defaultRunner
+	}
+	if now == nil {
+		now = time.Now
+	}
+
+	return &CodexBackend{
+		binary:        resolved,
+		bypassSandbox: bypassSandbox,
+		runCmd:        runner,
+		now:           now,
+	}
+}
+
+func defaultRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	return cmd.CombinedOutput()
+}
+
+func (b *CodexBackend) Name() string {
+	return "codex-tmux"
+}
+
+func (b *CodexBackend) Spawn(ctx context.Context, cfg SpawnConfig) (AgentHandle, error) {
+	sessionName := swarmSessionPrefix + cfg.TicketID
+	cmdStr := b.buildExecCommand(cfg)
+
+	if _, err := b.runCmd(ctx, "tmux", "new-session", "-d", "-s", sessionName, cmdStr); err != nil {
+		return AgentHandle{}, err
+	}
+
+	return AgentHandle{
+		SessionName: sessionName,
+		StartedAt:   b.now(),
+	}, nil
+}
+
+func (b *CodexBackend) buildExecCommand(cfg SpawnConfig) string {
+	parts := []string{shQuote(b.binary), "exec"}
+	if strings.TrimSpace(cfg.Model) != "" {
+		parts = append(parts, "-m", shQuote(cfg.Model))
+	}
+	if b.bypassSandbox {
+		parts = append(parts, "--dangerously-bypass-approvals-and-sandbox")
+	}
+	if strings.TrimSpace(cfg.Effort) != "" {
+		parts = append(parts, "--effort", shQuote(cfg.Effort))
+	}
+	if strings.TrimSpace(cfg.WorkDir) != "" {
+		parts = append(parts, "-C", shQuote(cfg.WorkDir))
+	}
+	for _, flag := range cfg.ExtraFlags {
+		if strings.TrimSpace(flag) == "" {
+			continue
+		}
+		parts = append(parts, shQuote(flag))
+	}
+	parts = append(parts, fmt.Sprintf("\"$(cat %s)\"", shQuote(cfg.PromptFile)))
+	return strings.Join(parts, " ")
+}
+
+func shQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func (b *CodexBackend) IsAlive(handle AgentHandle) bool {
+	if strings.TrimSpace(handle.SessionName) == "" {
+		return false
+	}
+	_, err := b.runCmd(context.Background(), "tmux", "has-session", "-t", handle.SessionName)
+	return err == nil
+}
+
+func (b *CodexBackend) HasExited(handle AgentHandle) bool {
+	if !b.IsAlive(handle) {
+		return false
+	}
+	out, err := b.runCmd(context.Background(), "tmux", "list-panes", "-t", handle.SessionName, "-F", "#{pane_pid}")
+	if err != nil {
+		return false
+	}
+	pidStr := strings.TrimSpace(string(out))
+	if pidStr == "" {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.Split(pidStr, "\n")[0])
+	if err != nil || pid <= 0 {
+		return false
+	}
+	_, err = b.runCmd(context.Background(), "ps", "-p", strconv.Itoa(pid))
+	return err != nil
+}
+
+func (b *CodexBackend) GetOutput(handle AgentHandle, lines int) (string, error) {
+	if lines <= 0 {
+		lines = 200
+	}
+	out, err := b.runCmd(context.Background(), "tmux", "capture-pane", "-t", handle.SessionName, "-p", "-S", fmt.Sprintf("-%d", lines))
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func (b *CodexBackend) Kill(handle AgentHandle) error {
+	_, err := b.runCmd(context.Background(), "tmux", "kill-session", "-t", handle.SessionName)
+	return err
+}
+
+// ListSessions returns currently running swarm-managed tmux sessions.
+func (b *CodexBackend) ListSessions(ctx context.Context) ([]string, error) {
+	out, err := b.runCmd(ctx, "tmux", "list-sessions", "-F", "#{session_name}")
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(out), "\n")
+	sessions := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, swarmSessionPrefix) {
+			sessions = append(sessions, line)
+		}
+	}
+	return sessions, nil
+}
