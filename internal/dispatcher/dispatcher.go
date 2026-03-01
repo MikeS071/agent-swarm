@@ -124,7 +124,7 @@ func (d *Dispatcher) ApprovePhaseGate() (Signal, []string) {
 			d.mu.Unlock()
 			if d.tracker != nil {
 				d.tracker.UnlockedPhase = p
-				_ = d.tracker.Save()
+				if saveErr := d.tracker.Save(); saveErr != nil { fmt.Fprintf(os.Stderr, "SAVE ERROR: %v\n", saveErr) }
 			}
 			break
 		}

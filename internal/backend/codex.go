@@ -202,7 +202,7 @@ func (b *CodexBackend) ListSessions(ctx context.Context) ([]string, error) {
 	sessions := make([]string, 0, len(lines))
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, swarmSessionPrefix) {
+		if strings.HasPrefix(line, swarmSessionPrefix) && !strings.Contains(line, "watchdog") {
 			sessions = append(sessions, line)
 		}
 	}
