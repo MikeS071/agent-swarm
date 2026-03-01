@@ -47,6 +47,7 @@ type WatchdogConfig struct {
 	MaxRuntime   string `toml:"max_runtime"`
 	StaleTimeout string `toml:"stale_timeout"`
 	MaxRetries   int    `toml:"max_retries"`
+	AutoApprove  bool   `toml:"auto_approve"`
 }
 
 type IntegrationConfig struct {

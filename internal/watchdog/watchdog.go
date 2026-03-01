@@ -274,7 +274,31 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 
 	sig, _ := w.dispatcher.Evaluate()
 	if sig == dispatcher.SignalPhaseGate {
-		if !w.gateNoticed {
+		if w.config.Watchdog.AutoApprove {
+			_ = w.notifier.Info(ctx, "phase gate reached — auto-approving")
+			approvedSig, spawnable := w.dispatcher.ApprovePhaseGate()
+			if err := w.saveTracker(); err != nil {
+				return err
+			}
+			if err := w.appendEvent("phase_gate_auto_approved", "", nil); err != nil {
+				return err
+			}
+			if approvedSig == dispatcher.SignalSpawn && len(spawnable) > 0 && w.dispatcher.CanSpawnMore() {
+				slots := w.config.Project.MaxAgents
+				if slots <= 0 {
+					slots = 1
+				}
+				if slots > len(spawnable) {
+					slots = len(spawnable)
+				}
+				for i := 0; i < slots; i++ {
+					if err := w.SpawnTicket(ctx, spawnable[i]); err != nil {
+						return err
+					}
+				}
+			}
+			w.gateNoticed = false
+		} else if !w.gateNoticed {
 			w.gateNoticed = true
 			if w.dryRun {
 				_ = w.notifier.Info(ctx, "[dry-run] phase gate reached")
