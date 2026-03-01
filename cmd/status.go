@@ -160,7 +160,7 @@ func runLiveStatus(cfgFile string, cfg *config.Config) error {
 
 		// Header
 		now := time.Now().Format("15:04:05")
-		fmt.Fprintf(os.Stdout, "agent-swarm status — %s (refresh 1s, q to quit)\n\n", now)
+		fmt.Fprintf(os.Stdout, "agent-swarm — %s — %s (refresh 1s, q to quit)\n\n", color.New(color.Bold).Sprint(tr.Project), now)
 
 		// Stats bar
 		stats := tr.Stats()

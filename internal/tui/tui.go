@@ -288,7 +288,7 @@ func (m model) renderList() string {
 	ramText := fmt.Sprintf("%.1f GB free", float64(ramMB)/1024.0)
 
 	var b strings.Builder
-	title := lipgloss.NewStyle().Bold(true).Render("agent-swarm")
+	title := lipgloss.NewStyle().Bold(true).Render("agent-swarm — " + m.config.Project.Name)
 	b.WriteString(title + "\n")
 	b.WriteString(fmt.Sprintf("Progress: %s %d/%d (%d%%)\n", renderBarOnly(done, total, 24), done, total, pct))
 	b.WriteString(fmt.Sprintf("Phase: %d | Agents: %d/%d | RAM: %s\n", phase, stats.Running, m.config.Project.MaxAgents, ramText))
