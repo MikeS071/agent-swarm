@@ -122,6 +122,20 @@ swarm status    # review completed work
 swarm go        # approve → next phase auto-spawns
 ```
 
+#### Auto-approve mode
+
+For fully autonomous operation, set `auto_approve = true` in `swarm.toml`:
+
+```toml
+[watchdog]
+interval = "30s"
+auto_approve = true
+```
+
+With auto-approve enabled, the watchdog automatically advances through phase gates without waiting for `swarm go`. This is useful for trusted pipelines where you want zero human intervention between phases.
+
+Phase gate events are still logged to the event trail for auditability.
+
 ### 8. Integration
 
 After all tickets complete, merge branches in dependency order:
@@ -182,6 +196,7 @@ Key endpoints:
 
 ## Tips
 
+- **Leave effort empty:** The `effort` config field is only supported on certain Codex versions. Leave it as `""` unless you know your version supports `--effort`.
 - **Start small:** 2-3 tickets in Phase 1 to validate before scaling to 7 agents
 - **Prompt quality matters:** Well-scoped prompts with clear deliverables beat vague ones
 - **TDD in prompts:** Tell agents to write tests first — makes completion detection reliable

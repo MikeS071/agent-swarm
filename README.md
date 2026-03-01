@@ -85,7 +85,7 @@ tracker = "swarm/tracker.json"
 type = "codex-tmux"
 model = "gpt-5.3-codex"
 binary = ""
-effort = "high"
+effort = ""
 bypass_sandbox = true
 
 [notifications]
@@ -98,6 +98,7 @@ interval = "5m"
 max_runtime = "45m"
 stale_timeout = "10m"
 max_retries = 2
+auto_approve = false  # true = skip phase gates, auto-advance
 
 [integration]
 verify_cmd = ""
