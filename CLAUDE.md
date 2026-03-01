@@ -1,4 +1,4 @@
-# CODEX.md — Codex Agent Entrypoint
+# CLAUDE.md — Claude Code Agent Entrypoint
 
 You are working in a Decapod-managed repository.
 See `AGENTS.md` for the full universal contract.
@@ -16,7 +16,7 @@ decapod rpc --op context.resolve
 
 ## Operating Mode
 
-- Work in your assigned worktree (set by `-C` flag or spawn script)
+- Work in your assigned worktree or project directory
 - Call `decapod workspace status` at startup and before implementation work
 - `.decapod` files are accessed only via the decapod CLI
 - Read canonical router: `decapod docs show core/DECAPOD.md`
