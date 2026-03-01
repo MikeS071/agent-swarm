@@ -196,7 +196,7 @@ Key endpoints:
 
 ## Tips
 
-- **Leave effort empty:** The `effort` config field is only supported on certain Codex versions. Leave it as `""` unless you know your version supports `--effort`.
+- **The `effort` field maps to `--config model_reasoning_effort=<value>`. Set to `"high"` for best results.
 - **Start small:** 2-3 tickets in Phase 1 to validate before scaling to 7 agents
 - **Prompt quality matters:** Well-scoped prompts with clear deliverables beat vague ones
 - **TDD in prompts:** Tell agents to write tests first — makes completion detection reliable

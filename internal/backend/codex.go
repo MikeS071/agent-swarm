@@ -119,7 +119,7 @@ func (b *CodexBackend) buildExecCommand(cfg SpawnConfig) string {
 		parts = append(parts, "--dangerously-bypass-approvals-and-sandbox")
 	}
 	if strings.TrimSpace(cfg.Effort) != "" {
-		parts = append(parts, "--effort", shQuote(cfg.Effort))
+		parts = append(parts, "--config", "model_reasoning_effort="+shQuote(cfg.Effort))
 	}
 	if strings.TrimSpace(cfg.WorkDir) != "" {
 		parts = append(parts, "-C", shQuote(cfg.WorkDir))

@@ -85,7 +85,7 @@ tracker = "swarm/tracker.json"
 type = "codex-tmux"
 model = "gpt-5.3-codex"
 binary = ""
-effort = ""
+effort = "high"
 bypass_sandbox = true
 
 [notifications]
