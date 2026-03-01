@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -39,7 +40,8 @@ type BackendConfig struct {
 type NotificationsConfig struct {
 	Type           string `toml:"type"`
 	TelegramChatID string `toml:"telegram_chat_id"`
-	TelegramToken  string `toml:"telegram_token"`
+	TelegramToken    string `toml:"telegram_token"`
+	TelegramTokenCmd string `toml:"telegram_token_cmd"`
 }
 
 type WatchdogConfig struct {
@@ -138,7 +140,17 @@ func Load(path string) (*Config, error) {
 	if err := validate(cfg); err != nil {
 		return nil, err
 	}
+	resolveSecrets(cfg)
 	return cfg, nil
+}
+
+func resolveSecrets(cfg *Config) {
+	if cfg.Notifications.TelegramToken == "" && cfg.Notifications.TelegramTokenCmd != "" {
+		out, err := exec.Command("sh", "-c", cfg.Notifications.TelegramTokenCmd).Output()
+		if err == nil {
+			cfg.Notifications.TelegramToken = strings.TrimSpace(string(out))
+		}
+	}
 }
 
 func validate(cfg *Config) error {
