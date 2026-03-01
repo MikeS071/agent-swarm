@@ -30,7 +30,7 @@ var goCmd = &cobra.Command{
 		}
 
 		sig, spawnable := d.ApprovePhaseGate()
-		if err := tr.Save(resolveFromConfig(cfgFile, cfg.Project.Tracker)); err != nil {
+		if err := tr.SaveTo(resolveFromConfig(cfgFile, cfg.Project.Tracker)); err != nil {
 			return err
 		}
 

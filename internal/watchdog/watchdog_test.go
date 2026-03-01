@@ -95,7 +95,7 @@ func TestRunOnceMarksDoneAndChainsSpawn(t *testing.T) {
 		"sw-01": {Status: tracker.StatusRunning, Phase: 1, Branch: "feat/sw-01"},
 		"sw-02": {Status: tracker.StatusTodo, Phase: 1, Branch: "feat/sw-02", Depends: []string{"sw-01"}},
 	})
-	if err := tr.Save(trackerPath); err != nil {
+	if err := tr.SaveTo(trackerPath); err != nil {
 		t.Fatalf("save tracker: %v", err)
 	}
 
@@ -143,7 +143,7 @@ func TestRunOnceRespawnThenFailOnSecondNoCommitExit(t *testing.T) {
 	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
 		"sw-01": {Status: tracker.StatusRunning, Phase: 1, Branch: "feat/sw-01"},
 	})
-	if err := tr.Save(trackerPath); err != nil {
+	if err := tr.SaveTo(trackerPath); err != nil {
 		t.Fatalf("save tracker: %v", err)
 	}
 
@@ -194,7 +194,7 @@ func TestRunOnceIdleSpawnWhenNothingRunning(t *testing.T) {
 	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
 		"sw-01": {Status: tracker.StatusTodo, Phase: 1, Branch: "feat/sw-01"},
 	})
-	if err := tr.Save(trackerPath); err != nil {
+	if err := tr.SaveTo(trackerPath); err != nil {
 		t.Fatalf("save tracker: %v", err)
 	}
 
@@ -236,7 +236,7 @@ func TestRunOncePhaseGateBlocksSpawning(t *testing.T) {
 		"sw-01": {Status: tracker.StatusDone, Phase: 1, Branch: "feat/sw-01"},
 		"sw-02": {Status: tracker.StatusTodo, Phase: 2, Branch: "feat/sw-02"},
 	})
-	if err := tr.Save(trackerPath); err != nil {
+	if err := tr.SaveTo(trackerPath); err != nil {
 		t.Fatalf("save tracker: %v", err)
 	}
 

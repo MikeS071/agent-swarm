@@ -52,7 +52,7 @@ func scaffoldProject(project string) error {
 		Tickets: map[string]tracker.Ticket{},
 	}
 	trackerPath := filepath.Join(root, cfg.Project.Tracker)
-	if err := tr.Save(trackerPath); err != nil {
+	if err := tr.SaveTo(trackerPath); err != nil {
 		return err
 	}
 

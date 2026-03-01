@@ -47,7 +47,7 @@ var addTicketCmd = &cobra.Command{
 			Branch:  "feat/" + id,
 			Desc:    addTicketDesc,
 		}
-		return tr.Save(trackerPath)
+		return tr.SaveTo(trackerPath)
 	},
 }
 

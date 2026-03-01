@@ -33,7 +33,7 @@ func TestLoadSaveRoundTrip(t *testing.T) {
 	t.Parallel()
 	tr := sampleTracker()
 	path := filepath.Join(t.TempDir(), "tracker.json")
-	if err := tr.Save(path); err != nil {
+	if err := tr.SaveTo(path); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 

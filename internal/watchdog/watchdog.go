@@ -430,7 +430,7 @@ func (w *Watchdog) saveTracker() error {
 	if w.dryRun || w.tracker == nil || w.config == nil || strings.TrimSpace(w.config.Project.Tracker) == "" {
 		return nil
 	}
-	return w.tracker.Save(w.config.Project.Tracker)
+	return w.tracker.SaveTo(w.config.Project.Tracker)
 }
 
 func (w *Watchdog) maxRetries() int {

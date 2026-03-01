@@ -12,6 +12,8 @@ import (
 type Tracker struct {
 	Project string            `json:"project"`
 	Tickets map[string]Ticket `json:"tickets"`
+	UnlockedPhase int               `json:"unlocked_phase,omitempty"`
+	filePath      string            `json:"-"`
 }
 
 type Ticket struct {
@@ -54,10 +56,18 @@ func Load(path string) (*Tracker, error) {
 	if t.Tickets == nil {
 		t.Tickets = map[string]Ticket{}
 	}
+	t.filePath = path
 	return &t, nil
 }
 
-func (t *Tracker) Save(path string) error {
+func (t *Tracker) Save() error {
+	if t.filePath == "" {
+		return fmt.Errorf("tracker has no file path")
+	}
+	return t.SaveTo(t.filePath)
+}
+
+func (t *Tracker) SaveTo(path string) error {
 	if t == nil {
 		return fmt.Errorf("tracker is nil")
 	}

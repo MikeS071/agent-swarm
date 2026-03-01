@@ -675,5 +675,5 @@ func (s *Server) saveTrackerLocked() {
 	if strings.TrimSpace(s.trackerPath) == "" {
 		return
 	}
-	_ = s.tracker.Save(s.trackerPath)
+	_ = s.tracker.SaveTo(s.trackerPath)
 }

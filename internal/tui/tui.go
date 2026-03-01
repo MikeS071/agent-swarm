@@ -538,7 +538,7 @@ func (m *model) approveGate() {
 	}
 	d.ApprovePhaseGate()
 	proj := m.projects[m.projectIndex]
-	if err := m.tracker.Save(proj.trackerPath); err != nil {
+	if err := m.tracker.SaveTo(proj.trackerPath); err != nil {
 		m.lastErr = err
 		return
 	}
@@ -613,7 +613,7 @@ func (m *model) respawnSelected() {
 		m.lastErr = err
 		return
 	}
-	if err := m.tracker.Save(proj.trackerPath); err != nil {
+	if err := m.tracker.SaveTo(proj.trackerPath); err != nil {
 		m.lastErr = err
 	}
 }

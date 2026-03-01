@@ -122,6 +122,10 @@ func (d *Dispatcher) ApprovePhaseGate() (Signal, []string) {
 			d.mu.Lock()
 			d.unlockedPhase = p
 			d.mu.Unlock()
+			if d.tracker != nil {
+				d.tracker.UnlockedPhase = p
+				_ = d.tracker.Save()
+			}
 			break
 		}
 	}
@@ -158,6 +162,9 @@ func (d *Dispatcher) PhaseStatus() PhaseStatus {
 func (d *Dispatcher) initialPhase() int {
 	if d.tracker == nil {
 		return 0
+	}
+	if d.tracker.UnlockedPhase > 0 {
+		return d.tracker.UnlockedPhase
 	}
 	phases := d.tracker.PhaseNumbers()
 	if len(phases) == 0 {
