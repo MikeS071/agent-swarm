@@ -181,6 +181,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.approveGate()
 			m.refresh()
 			return m, nil
+		case s == "m":
+			m.toggleAutoApprove()
+			m.refresh()
+			return m, nil
 		case s == "p":
 			m.nextProject()
 			return m, nil
@@ -309,7 +313,11 @@ func (m model) renderList() string {
 	ramText := fmt.Sprintf("%.1f GB free", float64(ramMB)/1024.0)
 
 	var b strings.Builder
-	title := lipgloss.NewStyle().Bold(true).Render("agent-swarm — " + m.config.Project.Name)
+	modeTag := "manual"
+	if m.config.Watchdog.AutoApprove {
+		modeTag = "auto"
+	}
+	title := lipgloss.NewStyle().Bold(true).Render("agent-swarm — " + m.config.Project.Name + " [" + modeTag + "]")
 	b.WriteString(title + "\n")
 	b.WriteString(fmt.Sprintf("Progress: %s %d/%d (%d%%)\n", renderBarOnly(done, total, 24), done, total, pct))
 	b.WriteString(fmt.Sprintf("Phase: %d | Agents: %d/%d | RAM: %s\n", phase, stats.Running, m.config.Project.MaxAgents, ramText))
@@ -327,7 +335,7 @@ func (m model) renderList() string {
 	if totalPages > 1 {
 		b.WriteString(fmt.Sprintf("Page %d/%d  ", m.page+1, totalPages))
 	}
-	b.WriteString("q: quit | Enter: view | k: kill | r: respawn | A: approve phase | p: project | [/]: page | Tab: compact")
+	b.WriteString("q: quit | Enter: view | k: kill | r: respawn | A: approve | m: auto/manual | p: project | [/]: page")
 	if m.lastErr != nil {
 		b.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.lastErr.Error()))
 	}
@@ -576,6 +584,33 @@ func newBackend(cfg *config.Config) backend.AgentBackend {
 		return backend.NewCodexBackend(cfg.Backend.Binary, cfg.Backend.BypassSandbox)
 	}
 	return &noopBackend{}
+}
+
+func (m *model) toggleAutoApprove() {
+	if m.config == nil || len(m.projects) == 0 {
+		return
+	}
+	m.config.Watchdog.AutoApprove = !m.config.Watchdog.AutoApprove
+	proj := m.projects[m.projectIndex]
+
+	// Write back to swarm.toml
+	raw, err := os.ReadFile(proj.configPath)
+	if err != nil {
+		m.lastErr = fmt.Errorf("read config: %w", err)
+		return
+	}
+	updated := strings.Replace(string(raw),
+		fmt.Sprintf("auto_approve = %v", !m.config.Watchdog.AutoApprove),
+		fmt.Sprintf("auto_approve = %v", m.config.Watchdog.AutoApprove), 1)
+	if err := os.WriteFile(proj.configPath, []byte(updated), 0o644); err != nil {
+		m.lastErr = fmt.Errorf("write config: %w", err)
+		return
+	}
+	mode := "manual (phase gates)"
+	if m.config.Watchdog.AutoApprove {
+		mode = "auto (no gates)"
+	}
+	m.lastErr = fmt.Errorf("🔄 Switched to %s", mode)
 }
 
 func (m *model) approveGate() {
