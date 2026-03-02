@@ -125,3 +125,19 @@ Review validation_output.json. If there are failures:
 - If your changes introduce NEW failures, fix them before proceeding
 - Commit validation_output.json with your final commit
 ```
+
+## Bugs Fixed (2026-03-02, commits 6ed4824 → 20c21bd)
+
+### Dispatcher bugs
+1. **Stale branch blocks spawn forever** — worktree `Create()` failed on existing branch, ticket stayed `todo`, retried every 30s infinitely
+   - Fix: Delete existing branch before `git worktree add -b`
+2. **`spawnableAcrossPhases()` ignored phase gates** — with `auto_approve=false`, tickets from Phase 5 could spawn while Phase 1 was still running
+   - Fix: Cap spawnable tickets to `≤ currentPhase` when strict gates are on
+3. **Idle spawn only ran when 0 agents running** — `runningCount < maxAgents` gate prevented filling available slots when some agents were already active
+   - Fix: Always evaluate capacity; `CanSpawnMore()` inside loop handles the real check
+
+### Watchdog bugs
+4. **No spawn failure tracking** — failed spawns retried forever with no backoff or failure marking
+   - Fix: `spawnErrors` map tracks consecutive failures; 3 failures → ticket marked failed + notification
+5. **TUI Phase column always showed P0** — `Phase` field on `ticketRow` struct was never populated in `rebuildRows()`
+   - Fix: Set `Phase: tk.Phase` when building rows

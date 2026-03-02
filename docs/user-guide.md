@@ -111,6 +111,8 @@ TUI keybindings:
 | `g` | Approve phase gate |
 | `p` | Switch project |
 | `Tab` | Toggle compact/detailed view |
+| `[` | Previous page |
+| `]` | Next page |
 | `q` | Quit |
 
 ### 7. Phase gates
