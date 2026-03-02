@@ -265,6 +265,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	}
 	if runningCount < w.config.Project.MaxAgents {
 		sig, spawnable := w.dispatcher.Evaluate()
+		w.log("idle check: signal=%s, spawnable=%d, running=%d", sig, len(spawnable), runningCount)
 		if sig == dispatcher.SignalSpawn && len(spawnable) > 0 && w.dispatcher.CanSpawnMore() {
 			slots := w.config.Project.MaxAgents
 			if slots <= 0 {

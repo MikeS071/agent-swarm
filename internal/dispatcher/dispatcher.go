@@ -186,7 +186,7 @@ func (d *Dispatcher) phaseGateReached() bool {
 		return false
 	}
 	for _, tk := range curTickets {
-		if tk.Status != tracker.StatusDone {
+		if tk.Status != tracker.StatusDone && tk.Status != tracker.StatusFailed {
 			return false
 		}
 	}
