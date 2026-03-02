@@ -84,14 +84,34 @@ agent-swarm status --json          # machine-readable
 agent-swarm status --watch         # live TUI with progress bars
 ```
 
-### 6. Phase gates
+### 6. TUI keybindings
 
-When a phase completes, the watchdog pauses and waits:
+| Key | Action |
+|-----|--------|
+| `↑`/`↓` | Navigate tickets |
+| `Enter` | View agent output |
+| `Esc` | Back to list |
+| `k` | Kill selected agent |
+| `r` | Respawn selected ticket |
+| `A` | Approve phase gate |
+| `m` | Toggle auto/manual mode (persists to swarm.toml) |
+| `p` | Cycle through projects |
+| `[`/`]` | Previous/next page |
+| `Tab` | Toggle compact view |
+| `q` | Quit |
+
+Title bar shows `[auto]` or `[manual]` to indicate current mode.
+
+### 7. Phase gates
+
+When a phase completes, the watchdog pauses (in manual mode) and waits:
 ```bash
 agent-swarm go                     # approve → next phase spawns
 ```
 
-### 7. Integrate
+Or press `A` in the TUI. In auto mode (`m` to toggle), phases advance automatically.
+
+### 8. Integrate
 
 After all tickets complete, merge branches in dependency order:
 ```bash
@@ -115,6 +135,9 @@ agent-swarm integrate --continue   # resume after conflict fix
 | `agent-swarm serve [--port 8090]` | HTTP API + SSE server |
 | `agent-swarm integrate [--base main]` | Merge branches in dep order |
 | `agent-swarm install [--uninstall]` | Install system service |
+| `agent-swarm archive` | Archive done tickets |
+| `agent-swarm archive restore` | Restore archived tickets |
+| `agent-swarm archive list` | List archived tickets |
 | `agent-swarm cleanup [--older-than 24h]` | Remove stale worktrees |
 
 ## Configuration (`swarm.toml`)
@@ -126,6 +149,7 @@ repo = "."
 base_branch = "main"
 max_agents = 7
 min_ram_mb = 1024
+auto_approve = false       # toggle at runtime with 'm' in TUI
 prompt_dir = "swarm/prompts"
 tracker = "swarm/tracker.json"
 
