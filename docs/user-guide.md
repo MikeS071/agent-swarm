@@ -108,7 +108,7 @@ TUI keybindings:
 | `Esc` | Back to list |
 | `k` | Kill selected agent |
 | `r` | Respawn selected agent |
-| `g` | Approve phase gate |
+| `A` (or `g`) | Approve phase gate |
 | `p` | Switch project |
 | `Tab` | Toggle compact/detailed view |
 | `[` | Previous page |
