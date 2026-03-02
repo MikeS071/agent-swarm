@@ -338,7 +338,12 @@ func renderTicketRow(row ticketRow, selected bool, compact bool, width int) stri
 		if status == "queued" && len(row.Depends) > 0 {
 			right = right + " (needs " + strings.Join(row.Depends, ",") + ")"
 		}
-		line = fmt.Sprintf("%-52s %s", line, right)
+		// Use terminal width minus right-side content (status + sha ~ 20 chars)
+		leftWidth := width - 24
+		if leftWidth < 40 {
+			leftWidth = 40
+		}
+		line = fmt.Sprintf("%-*s %s", leftWidth, line, right)
 	}
 	if selected {
 		return lipgloss.NewStyle().Bold(true).Render("› " + line)
