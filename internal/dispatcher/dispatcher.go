@@ -56,12 +56,20 @@ func (d *Dispatcher) Evaluate() (Signal, []string) {
 		return SignalAllDone, nil
 	}
 
+	// Strict phase-sequential: only spawn within current phase.
+	// Phase gate = all tickets in current phase done (no failed, no running).
 	if d.phaseGateReached() {
 		if d.config.Project.AutoApprove {
-			// Auto-advance through the gate
 			d.ApprovePhaseGate()
-			// Re-evaluate after advancing
-			return d.evaluateAfterApprove()
+			// Re-check after advancing
+			if d.tracker.AllDone() {
+				return SignalAllDone, nil
+			}
+			spawnable := d.spawnableInPhase(d.CurrentPhase())
+			if len(spawnable) > 0 {
+				return SignalSpawn, spawnable
+			}
+			return SignalBlocked, nil
 		}
 		return SignalPhaseGate, nil
 	}
@@ -71,24 +79,8 @@ func (d *Dispatcher) Evaluate() (Signal, []string) {
 		return SignalSpawn, spawnable
 	}
 
-	// Current phase blocked (failed/running tickets) — look across all phases
-	// for any ticket whose deps are satisfied
-	crossPhase := d.spawnableAcrossPhases()
-	if len(crossPhase) > 0 {
-		return SignalSpawn, crossPhase
-	}
-
-	return SignalBlocked, nil
-}
-
-func (d *Dispatcher) evaluateAfterApprove() (Signal, []string) {
-	if d.tracker.AllDone() {
-		return SignalAllDone, nil
-	}
-	spawnable := d.spawnableInPhase(d.CurrentPhase())
-	if len(spawnable) > 0 {
-		return SignalSpawn, spawnable
-	}
+	// No cross-phase spawning. If current phase is blocked (failed/running),
+	// we wait. Failed tickets must be resolved before the phase can complete.
 	return SignalBlocked, nil
 }
 
@@ -259,37 +251,6 @@ func (d *Dispatcher) spawnableInPhase(phase int) []string {
 }
 
 
-func (d *Dispatcher) spawnableAcrossPhases() []string {
-	if d.tracker == nil {
-		return nil
-	}
-	maxPhase := d.CurrentPhase()
-	if d.config.Project.AutoApprove {
-		maxPhase = 9999 // no phase restriction when auto-approve is on
-	}
-	var ids []string
-	for id, tk := range d.tracker.Tickets {
-		if tk.Status != tracker.StatusTodo {
-			continue
-		}
-		if tk.Phase > maxPhase {
-			continue
-		}
-		ready := true
-		for _, dep := range tk.Depends {
-			dt, ok := d.tracker.Get(dep)
-			if !ok || dt.Status != tracker.StatusDone {
-				ready = false
-				break
-			}
-		}
-		if ready {
-			ids = append(ids, id)
-		}
-	}
-	sort.Strings(ids)
-	return ids
-}
 
 func hasMinRAM(minMB int) bool {
 	if minMB <= 0 {
