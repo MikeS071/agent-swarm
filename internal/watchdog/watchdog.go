@@ -181,6 +181,18 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		return fmt.Errorf("watchdog dependencies are not initialized")
 	}
 
+	// Re-read tracker from disk to pick up external changes (e.g. TUI phase gate approval).
+	if w.tracker != nil && w.config != nil && w.config.Project.Tracker != "" {
+		if fresh, err := tracker.Load(w.config.Project.Tracker); err == nil {
+			// Preserve in-memory state that disk may not have (running sessions etc are already in tickets).
+			// But always adopt the disk unlocked_phase if higher (TUI may have approved a gate).
+			if fresh.UnlockedPhase > w.tracker.UnlockedPhase {
+				w.tracker.UnlockedPhase = fresh.UnlockedPhase
+				w.dispatcher.SetUnlockedPhase(fresh.UnlockedPhase)
+			}
+		}
+	}
+
 	if _, err := w.listRunningSessions(ctx); err != nil {
 		w.log("WARN: listRunningSessions: %v", err)
 	}

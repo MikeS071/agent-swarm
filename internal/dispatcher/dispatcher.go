@@ -139,6 +139,13 @@ func (d *Dispatcher) ApprovePhaseGate() (Signal, []string) {
 	return d.Evaluate()
 }
 
+// SetUnlockedPhase updates the dispatcher's unlocked phase from external source (e.g. tracker file reload).
+func (d *Dispatcher) SetUnlockedPhase(phase int) {
+	d.mu.Lock()
+	d.unlockedPhase = phase
+	d.mu.Unlock()
+}
+
 func (d *Dispatcher) CurrentPhase() int {
 	d.mu.RLock()
 	cur := d.unlockedPhase
