@@ -396,7 +396,7 @@ func statusIcon(status string) string {
 	case "running":
 		return "🔄"
 	case "failed":
-		return "✖"
+		return "❌"
 	case "blocked":
 		return "🔒"
 	default:
