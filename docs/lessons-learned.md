@@ -141,3 +141,35 @@ Review validation_output.json. If there are failures:
    - Fix: `spawnErrors` map tracks consecutive failures; 3 failures → ticket marked failed + notification
 5. **TUI Phase column always showed P0** — `Phase` field on `ticketRow` struct was never populated in `rebuildRows()`
    - Fix: Set `Phase: tk.Phase` when building rows
+
+## Standard Phase Flow (mandatory unless auto_approve overrides)
+
+Every phase follows this sequence — no exceptions:
+
+1. **Feature tickets** run in parallel (respecting deps within phase)
+2. **`int-N`** (integration) — merges all phase branches to dev, resolves conflicts, type-check + tests pass
+3. **`tst-N`** (test suite) — full E2E test + build verification + coverage
+4. **Phase gate** — watchdog stops, notifies human
+5. **Human verifies** — checks deployed dev site, tests functionality
+6. **Fix cycle** — if issues found, fix before approving
+7. **Human approves** — `swarm go` or TUI `g` key → next phase starts
+
+This is the default. `auto_approve = true` skips steps 4-7 (used for trusted pipelines like test backfill).
+
+### Ticket naming convention
+- Feature: `mc-01` through `mc-NN`
+- Integration: `int-N` (one per phase, depends on all phase feature tickets)
+- Test: `tst-N` (one per phase, depends on `int-N`)
+
+### Integration ticket responsibilities
+- Merge all phase feature branches to dev
+- Resolve merge conflicts
+- `npx tsc --noEmit` — zero type errors
+- `npx jest --ci` — all tests pass
+- Push to dev (triggers auto-deploy via Coolify)
+
+### Test ticket responsibilities
+- `npx tsc --noEmit` — zero type errors
+- `npx jest --ci --coverage` — all tests pass + coverage report
+- `npm run build` — production build succeeds
+- Fix any failures before committing

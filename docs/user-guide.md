@@ -239,3 +239,26 @@ See [lessons-learned.md](lessons-learned.md) for hard-won operational knowledge 
 - Common agent behaviour patterns and recovery workflows
 - Scaling configurations
 - Decapod governance integration
+
+## Standard Phase Flow
+
+Unless `auto_approve = true` overrides it, every phase follows this mandatory sequence:
+
+```
+Feature tickets (parallel) → int-N (integration merge) → tst-N (E2E test) → Phase gate → Human verifies → Fix → Approve → Next phase
+```
+
+Add integration and test tickets to every phase:
+
+```bash
+# For each phase N, add:
+swarm add-ticket int-N --phase N --deps <all-phase-N-tickets> --desc "Phase N integration merge"
+swarm add-ticket tst-N --phase N --deps int-N --desc "Phase N E2E test suite"
+```
+
+The integration ticket merges all feature branches, resolves conflicts, and verifies the build. The test ticket runs the full test suite with coverage. Only after both pass does the phase gate fire for human approval.
+```
+
+git add -A
+git commit -m "docs: standard phase flow — feature → integrate → test → gate → verify → approve"
+git push origin main 2>&1 | tail -2
