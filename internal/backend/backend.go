@@ -24,7 +24,8 @@ type SpawnConfig struct {
 	PromptFile string
 	Model      string
 	Effort     string
-	ExtraFlags []string
+	ExtraFlags   []string
+	ProjectName  string
 }
 
 // AgentHandle identifies a spawned agent session.

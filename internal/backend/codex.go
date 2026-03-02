@@ -76,6 +76,9 @@ func (b *CodexBackend) Name() string {
 
 func (b *CodexBackend) Spawn(ctx context.Context, cfg SpawnConfig) (AgentHandle, error) {
 	sessionName := swarmSessionPrefix + cfg.TicketID
+	if cfg.ProjectName != "" {
+		sessionName = swarmSessionPrefix + cfg.ProjectName + "_" + cfg.TicketID
+	}
 	cmdStr := b.buildExecCommand(cfg)
 
 	// Wrap with agent-wrapper to auto-commit + update tracker on exit
@@ -192,8 +195,13 @@ func (b *CodexBackend) Kill(handle AgentHandle) error {
 	return err
 }
 
-// ListSessions returns currently running swarm-managed tmux sessions.
+// ListSessions returns all running swarm-managed tmux sessions (unfiltered).
 func (b *CodexBackend) ListSessions(ctx context.Context) ([]string, error) {
+	return b.ListSessionsForProject(ctx, "")
+}
+
+// ListSessionsForProject returns sessions filtered by project name.
+func (b *CodexBackend) ListSessionsForProject(ctx context.Context, projectName string) ([]string, error) {
 	out, err := b.runCmd(ctx, "tmux", "list-sessions", "-F", "#{session_name}")
 	if err != nil {
 		// tmux returns exit 1 when no server is running (zero sessions) — not an error
@@ -209,6 +217,12 @@ func (b *CodexBackend) ListSessions(ctx context.Context) ([]string, error) {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, swarmSessionPrefix) && !strings.Contains(line, "watchdog") {
+			if projectName != "" {
+				expectedPrefix := swarmSessionPrefix + projectName + "_"
+				if !strings.HasPrefix(line, expectedPrefix) {
+					continue
+				}
+			}
 			sessions = append(sessions, line)
 		}
 	}

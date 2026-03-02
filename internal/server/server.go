@@ -363,7 +363,7 @@ func (s *Server) handleTicketOutput(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	handle := backend.AgentHandle{SessionName: sessionNameForTicket(id)}
+	handle := backend.AgentHandle{SessionName: s.sessionNameForTicket(id)}
 	s.writeOutputEvent(r.Context(), w, flusher, id, handle)
 
 	ticker := time.NewTicker(2 * time.Second)
@@ -401,7 +401,7 @@ func (s *Server) handleTicketKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := s.backend.Kill(backend.AgentHandle{SessionName: sessionNameForTicket(id)}); err != nil {
+	if err := s.backend.Kill(backend.AgentHandle{SessionName: s.sessionNameForTicket(id)}); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -455,7 +455,7 @@ func (s *Server) handleTicketRespawn(w http.ResponseWriter, r *http.Request) {
 	s.events.Publish(EventTicketSpawned, map[string]any{
 		"project": s.cfg.Project.Name,
 		"ticket":  id,
-		"agent":   sessionNameForTicket(id),
+		"agent":   s.sessionNameForTicket(id),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -667,7 +667,10 @@ func ticketRuntime(tk tracker.Ticket) string {
 	return time.Since(t).Round(time.Second).String()
 }
 
-func sessionNameForTicket(ticketID string) string {
+func (s *Server) sessionNameForTicket(ticketID string) string {
+	if s.cfg != nil && s.cfg.Project.Name != "" {
+		return "swarm-" + s.cfg.Project.Name + "_" + ticketID
+	}
 	return "swarm-" + ticketID
 }
 

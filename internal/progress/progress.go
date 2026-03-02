@@ -81,6 +81,10 @@ func InferHeuristic(output string, runtime time.Duration) int {
 // GetProgress computes ticket progress from output markers or heuristics.
 func GetProgress(handle backend.AgentHandle, be backend.AgentBackend, promptTasks int) TicketProgress {
 	ticketID := strings.TrimPrefix(handle.SessionName, "swarm-")
+	// Strip project prefix if present (format: swarm-<project>.<ticket>)
+	if dotIdx := strings.Index(ticketID, "_"); dotIdx >= 0 {
+		ticketID = ticketID[dotIdx+1:]
+	}
 	status := "todo"
 	if be.IsAlive(handle) {
 		status = "running"

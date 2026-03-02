@@ -122,6 +122,7 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.pageSize == 0 { m.pageSize = 20 }
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -240,7 +241,7 @@ func (m *model) refreshDetailOutput() {
 		m.detailOutput = "backend unavailable"
 		return
 	}
-	out, err := m.backend.GetOutput(backend.AgentHandle{SessionName: "swarm-" + m.detailID}, 50)
+	out, err := m.backend.GetOutput(backend.AgentHandle{SessionName: m.sessionName(m.detailID)}, 50)
 	if err != nil {
 		m.detailOutput = fmt.Sprintf("unable to load output: %v", err)
 		return
@@ -273,7 +274,7 @@ func (m *model) rebuildRows() {
 		}
 
 		if tk.Status == "running" {
-			h := backend.AgentHandle{SessionName: "swarm-" + id, StartedAt: time.Now().Add(-30 * time.Second)}
+			h := backend.AgentHandle{SessionName: m.sessionName(id), StartedAt: time.Now().Add(-30 * time.Second)}
 			pg := progress.GetProgress(h, m.backend, 0)
 			row.Progress = pg.Progress
 			row.Done = pg.TasksDone
@@ -646,12 +647,19 @@ func (m *model) nextProject() {
 	m.refresh()
 }
 
+func (m *model) sessionName(ticketID string) string {
+	if m.config != nil && m.config.Project.Name != "" {
+		return "swarm-" + m.config.Project.Name + "_" + ticketID
+	}
+	return "swarm-" + ticketID
+}
+
 func (m *model) killSelected() {
 	if len(m.tickets) == 0 || m.backend == nil {
 		return
 	}
 	id := m.tickets[m.cursor].ID
-	m.lastErr = m.backend.Kill(backend.AgentHandle{SessionName: "swarm-" + id})
+	m.lastErr = m.backend.Kill(backend.AgentHandle{SessionName: m.sessionName(id)})
 }
 
 func (m *model) respawnSelected() {

@@ -488,7 +488,8 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		WorkDir:    workDir,
 		PromptFile: promptPath,
 		Model:      w.config.Backend.Model,
-		Effort:     w.config.Backend.Effort,
+		Effort:      w.config.Backend.Effort,
+		ProjectName: w.config.Project.Name,
 	})
 	if err != nil {
 		return err
@@ -554,7 +555,11 @@ func (w *Watchdog) runningAgentCount(ctx context.Context) (int, error) {
 	count := 0
 	w.log("pass: %d running, checking exits", len(runningTicketIDs(w.tracker)))
 	for _, ticketID := range runningTicketIDs(w.tracker) {
-		if w.backend.IsAlive(backend.AgentHandle{SessionName: swarmSessionPrefix + ticketID}) {
+		sessName := swarmSessionPrefix + ticketID
+		if w.config.Project.Name != "" {
+			sessName = swarmSessionPrefix + w.config.Project.Name + "_" + ticketID
+		}
+		if w.backend.IsAlive(backend.AgentHandle{SessionName: sessName}) {
 			count++
 		}
 	}
@@ -562,6 +567,12 @@ func (w *Watchdog) runningAgentCount(ctx context.Context) (int, error) {
 }
 
 func (w *Watchdog) listRunningSessions(ctx context.Context) ([]string, error) {
+	type projectSessionLister interface {
+		ListSessionsForProject(context.Context, string) ([]string, error)
+	}
+	if lister, ok := w.backend.(projectSessionLister); ok {
+		return lister.ListSessionsForProject(ctx, w.config.Project.Name)
+	}
 	type sessionLister interface {
 		ListSessions(context.Context) ([]string, error)
 	}
