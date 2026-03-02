@@ -108,7 +108,7 @@ interval = "5m"
 max_runtime = "45m"
 stale_timeout = "10m"
 max_retries = 2
-auto_approve = false  # true = skip phase gates, auto-advance
+auto_approve = false  # true = skip phase gates; toggle at runtime with "m" in TUI
 
 [integration]
 verify_cmd = ""
@@ -140,11 +140,13 @@ Interactive terminal dashboard showing all discovered projects.
 | `↑/↓` | Navigate tickets |
 | `k` | Kill selected agent |
 | `r` | Respawn selected ticket |
-| `A` (or `g`) | Approve phase gate |
+| `A` | Approve phase gate (advance to next phase) |
+| `m` | Toggle auto/manual mode (persists to swarm.toml) |
 | `[` / `]` | Previous / next page |
 | `p` | Cycle through projects |
-| `a` | Archive all done tickets |
 | `Tab` | Toggle compact view |
+
+Title bar shows `[auto]` or `[manual]` to indicate current mode. In auto mode, phases advance without manual approval. In manual mode, all phase tickets must complete before pressing `A` to advance.
 
 ### Multi-project discovery
 

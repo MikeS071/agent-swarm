@@ -108,7 +108,8 @@ TUI keybindings:
 | `Esc` | Back to list |
 | `k` | Kill selected agent |
 | `r` | Respawn selected agent |
-| `A` (or `g`) | Approve phase gate |
+| `A` | Approve phase gate |
+| `m` | Toggle auto/manual mode (persists to swarm.toml) |
 | `p` | Switch project |
 | `Tab` | Toggle compact/detailed view |
 | `[` | Previous page |
@@ -129,12 +130,13 @@ swarm go        # approve → next phase auto-spawns
 For fully autonomous operation, set `auto_approve = true` in `swarm.toml`:
 
 ```toml
-[watchdog]
-interval = "30s"
+[project]
 auto_approve = true
 ```
 
-With auto-approve enabled, the watchdog automatically advances through phase gates without waiting for `swarm go`. This is useful for trusted pipelines where you want zero human intervention between phases.
+With auto-approve enabled, the watchdog automatically advances through phase gates without waiting for `swarm go`.
+
+You can also toggle this at runtime in the TUI by pressing `m`. The title bar shows `[auto]` or `[manual]` to indicate the current mode. Changes are persisted to `swarm.toml`.
 
 Phase gate events are still logged to the event trail for auditability.
 

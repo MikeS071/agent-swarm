@@ -184,3 +184,18 @@ Codex CLI frequently returns exit code 1 even when it completes successfully and
 **This is expected and not a bug.** The watchdog correctly handles this by checking for commits (not exit codes). If commits exist on the branch → ticket is done. If no commits → retry/fail.
 
 Never use exit codes to determine agent success. Always check git state.
+
+### Bug: Shift+A triggered archive instead of approve (2026-03-02)
+**Root cause:** `strings.ToLower(msg.String())` converted `A` to `a`, matching the archive case before the approve case.
+**Fix:** Use raw `msg.String()` for case-sensitive keys. Removed `a` as archive trigger — archive is CLI-only now.
+**Lesson:** Never use `ToLower()` on key input when you have case-sensitive keybindings.
+
+### Bug: TUI phase approval didn't trigger watchdog spawning (2026-03-02)
+**Root cause:** TUI wrote `unlocked_phase` to tracker.json, but the watchdog's in-memory Dispatcher kept the stale value. No disk reload between passes.
+**Fix:** Watchdog re-reads `unlocked_phase` from tracker file at start of each `RunOnce()`. If disk value is higher, syncs via `SetUnlockedPhase()`.
+**Lesson:** When multiple processes share state via a file, each must reload on every pass.
+
+### Bug: auto_approve never worked from TOML (2026-03-02)
+**Root cause:** `auto_approve` in TOML lives under `[project]`, but Go struct had it on `WatchdogConfig`. TOML parser mapped it to nothing.
+**Fix:** Moved `AutoApprove` field from `WatchdogConfig` to `ProjectConfig`.
+**Lesson:** TOML section names must match Go struct nesting exactly.
