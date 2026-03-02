@@ -377,11 +377,8 @@ func renderTicketRow(row ticketRow, selected bool, compact bool, width int) stri
 		if status == "queued" && len(row.Depends) > 0 {
 			right = right + " (needs " + strings.Join(row.Depends, ",") + ")"
 		}
-		// Use terminal width minus right-side content (status + sha ~ 20 chars)
-		leftWidth := width - 24
-		if leftWidth < 40 {
-			leftWidth = 40
-		}
+		// Fixed left column: icon(2) + ID(8) + phase(3) + desc(maxDesc) + spaces(3) ≈ 46-56
+		leftWidth := 8 + 3 + maxDesc + 5
 		line = fmt.Sprintf("%-*s %s", leftWidth, line, right)
 	}
 	if selected {
