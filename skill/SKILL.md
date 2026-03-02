@@ -100,7 +100,7 @@ agent-swarm status --watch         # live TUI with progress bars
 | `Tab` | Toggle compact view |
 | `q` | Quit |
 
-Title bar shows `[auto]` or `[manual]` to indicate current mode.
+Title bar shows `[auto]` or `[manual]`. Changes take effect immediately (no restart needed). Failed tickets always block dependents regardless of mode.
 
 ### 7. Phase gates
 

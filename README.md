@@ -108,7 +108,7 @@ interval = "5m"
 max_runtime = "45m"
 stale_timeout = "10m"
 max_retries = 2
-auto_approve = false  # true = skip phase gates; toggle at runtime with "m" in TUI
+auto_approve = false  # toggle at runtime with "m" in TUI; takes effect immediately
 
 [integration]
 verify_cmd = ""

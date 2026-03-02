@@ -136,7 +136,9 @@ auto_approve = true
 
 With auto-approve enabled, the watchdog automatically advances through phase gates without waiting for `swarm go`.
 
-You can also toggle this at runtime in the TUI by pressing `m`. The title bar shows `[auto]` or `[manual]` to indicate the current mode. Changes are persisted to `swarm.toml`.
+You can also toggle this at runtime in the TUI by pressing `m`. The title bar shows `[auto]` or `[manual]` to indicate the current mode. Changes are persisted to `swarm.toml` and take effect on the next watchdog pass (within seconds). No restart needed.
+
+In auto mode, the watchdog automatically approves phase gates and spawns the next phase. In manual mode, it stops at each gate until you press `A` or run `agent-swarm go`. Failed tickets always block their dependents regardless of mode.
 
 Phase gate events are still logged to the event trail for auditability.
 

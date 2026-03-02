@@ -199,3 +199,8 @@ Never use exit codes to determine agent success. Always check git state.
 **Root cause:** `auto_approve` in TOML lives under `[project]`, but Go struct had it on `WatchdogConfig`. TOML parser mapped it to nothing.
 **Fix:** Moved `AutoApprove` field from `WatchdogConfig` to `ProjectConfig`.
 **Lesson:** TOML section names must match Go struct nesting exactly.
+
+### Bug: TUI auto/manual toggle ignored by watchdog (2026-03-02)
+**Root cause:** Watchdog loaded config once at startup and never re-read it. TUI wrote `auto_approve` to `swarm.toml` but the in-memory config stayed stale.
+**Fix:** Watchdog re-reads `auto_approve` from `swarm.toml` on every `RunOnce()` pass. Dispatcher auto-advances phase gates when auto is true.
+**Lesson:** Any setting togglable at runtime must be re-read from disk by all consumers on every pass.
