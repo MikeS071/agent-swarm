@@ -100,6 +100,11 @@ func (m *Manager) HasCommits(ticketID, baseBranch string) (bool, string, error) 
 	branch := "feat/" + ticketID
 	wtPath := m.Path(ticketID)
 
+	// If worktree directory doesn't exist, treat as no commits
+	if _, statErr := os.Stat(wtPath); os.IsNotExist(statErr) {
+		return false, "", nil
+	}
+
 	logOut, err := m.git(wtPath, "log", fmt.Sprintf("%s..%s", baseBranch, branch), "--oneline")
 	if err != nil {
 		return false, "", err
