@@ -177,7 +177,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.respawnSelected()
 			m.refresh()
 			return m, nil
-		case raw == "A" || raw == "G" || s == "g":
+		case raw == "A":
 			m.approveGate()
 			m.refresh()
 			return m, nil
@@ -327,7 +327,7 @@ func (m model) renderList() string {
 	if totalPages > 1 {
 		b.WriteString(fmt.Sprintf("Page %d/%d  ", m.page+1, totalPages))
 	}
-	b.WriteString("q: quit | Enter: view | k: kill | r: respawn | A: approve phase | g: approve | p: project | [/]: page | Tab: compact")
+	b.WriteString("q: quit | Enter: view | k: kill | r: respawn | A: approve phase | p: project | [/]: page | Tab: compact")
 	if m.lastErr != nil {
 		b.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.lastErr.Error()))
 	}
