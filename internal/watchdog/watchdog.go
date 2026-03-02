@@ -233,6 +233,11 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				}
 				sig, spawnable := w.dispatcher.MarkDone(ticketID, sha)
 				delete(w.retries, ticketID)
+				// Clean up agent log on successful completion
+				if w.config != nil && w.config.Project.Tracker != "" {
+					logFile := filepath.Join(filepath.Dir(w.config.Project.Tracker), "logs", ticketID+".log")
+					os.Remove(logFile)
+				}
 				if err := w.appendEvent("ticket_done", ticketID, map[string]any{"sha": sha}); err != nil {
 					w.log("WARN: appendEvent(ticket_done, %s): %v", ticketID, err)
 				}

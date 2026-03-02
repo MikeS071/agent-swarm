@@ -100,6 +100,12 @@ func (b *CodexBackend) Spawn(ctx context.Context, cfg SpawnConfig) (AgentHandle,
 		}
 	}
 
+	// Capture stdout to log file for failure analysis
+	logDir := filepath.Join(cfg.ProjectDir, "swarm", "logs")
+	os.MkdirAll(logDir, 0o755)
+	logFile := filepath.Join(logDir, cfg.TicketID+".log")
+	cmdStr = fmt.Sprintf("(%s) 2>&1 | tee %s", cmdStr, shQuote(logFile))
+
 	if _, err := b.runCmd(ctx, "tmux", "new-session", "-d", "-s", sessionName, cmdStr); err != nil {
 		return AgentHandle{}, err
 	}
