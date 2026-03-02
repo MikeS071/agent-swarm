@@ -61,6 +61,8 @@ type model struct {
 	projects     []projectContext
 	projectIndex int
 	lastErr      error
+	page         int
+	pageSize     int
 	detailOutput string
 }
 
@@ -103,6 +105,7 @@ func Run(configPath string, projectName string, compact bool) error {
 		backend:      newBackend(cfg),
 		viewMode:     "list",
 		compact:      compact,
+		pageSize:     20,
 		projects:     projects,
 		projectIndex: idx,
 	}
@@ -133,11 +136,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyUp:
 			if m.viewMode != "detail" && m.cursor > 0 {
 				m.cursor--
+				m.page = m.cursor / m.pageSize
 			}
 			return m, nil
 		case tea.KeyDown:
 			if m.viewMode != "detail" && m.cursor < len(m.tickets)-1 {
 				m.cursor++
+				m.page = m.cursor / m.pageSize
 			}
 			return m, nil
 		case tea.KeyEnter:
@@ -180,6 +185,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			m.archiveDone()
 			m.refresh()
+			return m, nil
+		case "[":
+			if m.page > 0 {
+				m.page--
+				m.cursor = m.page * m.pageSize
+			}
+			return m, nil
+		case "]":
+			maxPage := (len(m.tickets) - 1) / m.pageSize
+			if m.page < maxPage {
+				m.page++
+				m.cursor = m.page * m.pageSize
+			}
 			return m, nil
 		}
 	}
@@ -297,11 +315,20 @@ func (m model) renderList() string {
 	b.WriteString(fmt.Sprintf("Progress: %s %d/%d (%d%%)\n", renderBarOnly(done, total, 24), done, total, pct))
 	b.WriteString(fmt.Sprintf("Phase: %d | Agents: %d/%d | RAM: %s\n", phase, stats.Running, m.config.Project.MaxAgents, ramText))
 	b.WriteString(strings.Repeat("-", maxInt(20, m.width-2)) + "\n")
-	for i, row := range m.tickets {
-		line := renderTicketRow(row, i == m.cursor, m.compact, m.width)
+	startIdx := m.page * m.pageSize
+	endIdx := startIdx + m.pageSize
+	if endIdx > len(m.tickets) {
+		endIdx = len(m.tickets)
+	}
+	for i := startIdx; i < endIdx; i++ {
+		line := renderTicketRow(m.tickets[i], i == m.cursor, m.compact, m.width)
 		b.WriteString(line + "\n")
 	}
-	b.WriteString("q: quit | Enter: view output | k: kill | r: respawn | g: approve gate | p: project | a: archive done | Tab: compact")
+	totalPages := (len(m.tickets) + m.pageSize - 1) / m.pageSize
+	if totalPages > 1 {
+		b.WriteString(fmt.Sprintf("Page %d/%d  ", m.page+1, totalPages))
+	}
+	b.WriteString("q: quit | Enter: view | k: kill | r: respawn | g: gate | p: project | [/]: page | Tab: compact")
 	if m.lastErr != nil {
 		b.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.lastErr.Error()))
 	}
