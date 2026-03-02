@@ -177,6 +177,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "p":
 			m.nextProject()
 			return m, nil
+		case "a":
+			m.archiveDone()
+			m.refresh()
+			return m, nil
 		}
 	}
 	return m, nil
@@ -297,7 +301,7 @@ func (m model) renderList() string {
 		line := renderTicketRow(row, i == m.cursor, m.compact, m.width)
 		b.WriteString(line + "\n")
 	}
-	b.WriteString("q: quit | Enter: view output | k: kill | r: respawn | g: approve gate | p: project | Tab: compact")
+	b.WriteString("q: quit | Enter: view output | k: kill | r: respawn | g: approve gate | p: project | a: archive done | Tab: compact")
 	if m.lastErr != nil {
 		b.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.lastErr.Error()))
 	}
@@ -662,3 +666,16 @@ func (n *noopBackend) GetOutput(backend.AgentHandle, int) (string, error) {
 }
 func (n *noopBackend) Kill(backend.AgentHandle) error { return fmt.Errorf("backend not configured") }
 func (n *noopBackend) Name() string                   { return "noop" }
+
+
+func (m *model) archiveDone() {
+	if m.tracker == nil || len(m.projects) == 0 {
+		return
+	}
+	proj := m.projects[m.projectIndex]
+	archivePath := tracker.DefaultArchivePath(proj.trackerPath)
+	_, err := tracker.ArchiveDoneTickets(proj.trackerPath, archivePath, tracker.ArchiveOptions{})
+	if err != nil {
+		m.lastErr = err
+	}
+}
