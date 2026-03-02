@@ -164,36 +164,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		s := strings.ToLower(msg.String())
-		switch s {
-		case "q":
+		raw := msg.String()
+		s := strings.ToLower(raw)
+		switch {
+		case s == "q":
 			return m, tea.Quit
-		case "k":
+		case s == "k":
 			m.killSelected()
 			m.refresh()
 			return m, nil
-		case "r":
+		case s == "r":
 			m.respawnSelected()
 			m.refresh()
 			return m, nil
-		case "g", "A":
+		case raw == "A" || raw == "G" || s == "g":
 			m.approveGate()
 			m.refresh()
 			return m, nil
-		case "p":
+		case s == "p":
 			m.nextProject()
 			return m, nil
-		case "a":
-			m.archiveDone()
-			m.refresh()
-			return m, nil
-		case "[":
+		case s == "[":
 			if m.page > 0 {
 				m.page--
 				m.cursor = m.page * m.pageSize
 			}
 			return m, nil
-		case "]":
+		case s == "]":
 			maxPage := (len(m.tickets) - 1) / m.pageSize
 			if m.page < maxPage {
 				m.page++
@@ -330,7 +327,7 @@ func (m model) renderList() string {
 	if totalPages > 1 {
 		b.WriteString(fmt.Sprintf("Page %d/%d  ", m.page+1, totalPages))
 	}
-	b.WriteString("q: quit | Enter: view | k: kill | r: respawn | A: approve phase | p: project | [/]: page | Tab: compact")
+	b.WriteString("q: quit | Enter: view | k: kill | r: respawn | A: approve phase | g: approve | p: project | [/]: page | Tab: compact")
 	if m.lastErr != nil {
 		b.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.lastErr.Error()))
 	}
