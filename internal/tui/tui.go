@@ -429,6 +429,7 @@ func shortSHA(sha string) string {
 
 func discoverProjects(preferredConfig string) ([]projectContext, error) {
 	seen := map[string]bool{}
+	seenNames := map[string]bool{}
 	result := make([]projectContext, 0)
 	add := func(path string) {
 		abs, err := filepath.Abs(path)
@@ -442,6 +443,9 @@ func discoverProjects(preferredConfig string) ([]projectContext, error) {
 		if err != nil {
 			return
 		}
+		if seenNames[cfg.Project.Name] {
+			return
+		}
 		trackerPath := absOrJoin(filepath.Dir(abs), cfg.Project.Tracker)
 		result = append(result, projectContext{
 			name:        cfg.Project.Name,
@@ -450,19 +454,28 @@ func discoverProjects(preferredConfig string) ([]projectContext, error) {
 			configDir:   filepath.Dir(abs),
 		})
 		seen[abs] = true
+		seenNames[cfg.Project.Name] = true
 	}
 
 	if strings.TrimSpace(preferredConfig) != "" {
 		add(preferredConfig)
 	}
+	skipDirs := map[string]bool{
+		".git": true, "node_modules": true, "vendor": true, ".next": true,
+		".-worktrees": true, ".decapod": true, "coverage": true,
+	}
 	_ = filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if d.IsDir() && d.Name() == ".git" {
-			return filepath.SkipDir
-		}
 		if d.IsDir() {
+			if skipDirs[d.Name()] || strings.HasSuffix(d.Name(), "-worktrees") {
+				return filepath.SkipDir
+			}
+			// Limit depth to 3
+			if strings.Count(path, string(filepath.Separator)) >= 3 {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if d.Name() == "swarm.toml" {

@@ -90,6 +90,24 @@
       "ghost_count": 1,
       "label": "codex-sw-09",
       "commitSha": "9678041"
+    },
+    "sw-10": {
+      "status": "done",
+      "phase": 4,
+      "depends": [],
+      "branch": "feat/sw-10",
+      "desc": "Archive command for done tickets",
+      "label": "codex-sw-10",
+      "commitSha": "ece6264"
+    },
+    "sw-11": {
+      "status": "done",
+      "phase": 4,
+      "depends": [],
+      "branch": "feat/sw-11",
+      "desc": "TUI startup and refresh performance",
+      "label": "codex-sw-11",
+      "commitSha": "ece6264"
     }
   },
   "maxConcurrent": 4

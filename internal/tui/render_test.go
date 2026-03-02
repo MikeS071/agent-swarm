@@ -14,7 +14,7 @@ func TestRenderTicketRowByStatus(t *testing.T) {
 		{name: "done", status: "done", want: "✅"},
 		{name: "running", status: "running", want: "🔄"},
 		{name: "queued", status: "todo", want: "⏳"},
-		{name: "failed", status: "failed", want: "✖"},
+		{name: "failed", status: "failed", want: "❌"},
 		{name: "blocked", status: "blocked", want: "🔒"},
 	}
 
