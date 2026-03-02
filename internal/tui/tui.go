@@ -176,7 +176,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.respawnSelected()
 			m.refresh()
 			return m, nil
-		case "g":
+		case "g", "A":
 			m.approveGate()
 			m.refresh()
 			return m, nil
@@ -330,7 +330,7 @@ func (m model) renderList() string {
 	if totalPages > 1 {
 		b.WriteString(fmt.Sprintf("Page %d/%d  ", m.page+1, totalPages))
 	}
-	b.WriteString("q: quit | Enter: view | k: kill | r: respawn | g: gate | p: project | [/]: page | Tab: compact")
+	b.WriteString("q: quit | Enter: view | k: kill | r: respawn | A: approve phase | p: project | [/]: page | Tab: compact")
 	if m.lastErr != nil {
 		b.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.lastErr.Error()))
 	}
@@ -588,16 +588,18 @@ func (m *model) approveGate() {
 	d := dispatcher.New(m.config, m.tracker)
 	sig, _ := d.Evaluate()
 	if sig != dispatcher.SignalPhaseGate {
-		m.lastErr = fmt.Errorf("no phase gate (signal: %s)", sig)
+		phase := m.tracker.ActivePhase()
+		m.lastErr = fmt.Errorf("phase %d not at gate yet (signal: %s) — all tickets must complete first", phase, sig)
 		return
 	}
+	phase := m.tracker.ActivePhase()
 	d.ApprovePhaseGate()
 	proj := m.projects[m.projectIndex]
 	if err := m.tracker.SaveTo(proj.trackerPath); err != nil {
 		m.lastErr = err
 		return
 	}
-	m.lastErr = nil
+	m.lastErr = fmt.Errorf("✅ Phase %d approved — spawning next phase", phase)
 }
 
 func (m *model) nextProject() {
