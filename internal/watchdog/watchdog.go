@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -86,6 +87,7 @@ type Watchdog struct {
 	stuckAlerts map[string]bool
 	gateNoticed    bool
 	completionSent bool
+	logger         *log.Logger
 }
 
 // New creates a watchdog instance.
@@ -124,6 +126,16 @@ func New(
 }
 
 // SetDryRun toggles non-mutating evaluation mode.
+
+func (w *Watchdog) log(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if w.logger != nil {
+		w.logger.Println(msg)
+	} else {
+		fmt.Fprintf(os.Stderr, "[watchdog] %s\n", msg)
+	}
+}
+
 func (w *Watchdog) SetDryRun(v bool) {
 	if w != nil {
 		w.dryRun = v
@@ -138,7 +150,8 @@ func (w *Watchdog) Run(ctx context.Context) error {
 	}
 
 	if err := w.RunOnce(ctx); err != nil {
-		return err
+		w.log("ERROR: initial watchdog pass failed: %v", err)
+		// Continue to ticker loop — don't exit
 	}
 
 	ticker := time.NewTicker(interval)
@@ -150,7 +163,8 @@ func (w *Watchdog) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if err := w.RunOnce(ctx); err != nil {
-				return err
+				w.log("ERROR: watchdog pass failed: %v", err)
+				// Continue running — don't crash the loop
 			}
 		}
 	}
@@ -166,9 +180,10 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	}
 
 	if _, err := w.listRunningSessions(ctx); err != nil {
-		return err
+		w.log("WARN: listRunningSessions: %v", err)
 	}
 
+	w.log("pass: %d running, checking exits", len(runningTicketIDs(w.tracker)))
 	for _, ticketID := range runningTicketIDs(w.tracker) {
 		tk := w.tracker.Tickets[ticketID]
 		handle := backend.AgentHandle{SessionName: swarmSessionPrefix + ticketID}
@@ -179,7 +194,8 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		if w.backend.HasExited(handle) {
 			hasCommits, sha, err := w.worktree.HasCommits(ticketID, w.config.Project.BaseBranch)
 			if err != nil {
-				return err
+				w.log("WARN: HasCommits(%s) error: %v — treating as no commits", ticketID, err)
+				hasCommits = false
 			}
 
 			if hasCommits {
@@ -190,14 +206,14 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				sig, spawnable := w.dispatcher.MarkDone(ticketID, sha)
 				delete(w.retries, ticketID)
 				if err := w.appendEvent("ticket_done", ticketID, map[string]any{"sha": sha}); err != nil {
-					return err
+					w.log("WARN: appendEvent(ticket_done, %s): %v", ticketID, err)
 				}
 				if err := w.saveTracker(); err != nil {
-					return err
+					w.log("WARN: saveTracker: %v", err)
 				}
 				if sig == dispatcher.SignalSpawn && w.dispatcher.CanSpawnMore() && len(spawnable) > 0 {
 					if err := w.SpawnTicket(ctx, spawnable[0]); err != nil {
-						return err
+						w.log("WARN: SpawnTicket(%s) after done: %v", spawnable[0], err)
 					}
 				}
 				continue
@@ -211,10 +227,10 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					continue
 				}
 				if err := w.appendEvent("respawn", ticketID, map[string]any{"attempt": attempt}); err != nil {
-					return err
+					w.log("WARN: appendEvent(respawn, %s): %v", ticketID, err)
 				}
 				if err := w.SpawnTicket(ctx, ticketID); err != nil {
-					return err
+					w.log("WARN: respawn SpawnTicket(%s): %v", ticketID, err)
 				}
 				continue
 			}
@@ -224,7 +240,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				continue
 			}
 			if err := w.dispatcher.MarkFailed(ticketID); err != nil {
-				return err
+				w.log("WARN: MarkFailed(%s): %v", ticketID, err)
 			}
 			if err := w.saveTracker(); err != nil {
 				return err
@@ -244,9 +260,10 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 
 	runningCount, err := w.runningAgentCount(ctx)
 	if err != nil {
-		return err
+		w.log("WARN: runningAgentCount: %v — assuming 0", err)
+		runningCount = 0
 	}
-	if runningCount == 0 {
+	if runningCount < w.config.Project.MaxAgents {
 		sig, spawnable := w.dispatcher.Evaluate()
 		if sig == dispatcher.SignalSpawn && len(spawnable) > 0 && w.dispatcher.CanSpawnMore() {
 			slots := w.config.Project.MaxAgents
@@ -263,10 +280,10 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					continue
 				}
 				if err := w.appendEvent("idle_spawn", ticketID, nil); err != nil {
-					return err
+					w.log("WARN: appendEvent(idle_spawn, %s): %v", ticketID, err)
 				}
 				if err := w.SpawnTicket(ctx, ticketID); err != nil {
-					return err
+					w.log("WARN: idle SpawnTicket(%s): %v", ticketID, err)
 				}
 			}
 		}
@@ -278,10 +295,10 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			_ = w.notifier.Info(ctx, "phase gate reached — auto-approving")
 			approvedSig, spawnable := w.dispatcher.ApprovePhaseGate()
 			if err := w.saveTracker(); err != nil {
-				return err
+				w.log("WARN: saveTracker after phase gate: %v", err)
 			}
 			if err := w.appendEvent("phase_gate_auto_approved", "", nil); err != nil {
-				return err
+				w.log("WARN: appendEvent(phase_gate_auto_approved): %v", err)
 			}
 			if approvedSig == dispatcher.SignalSpawn && len(spawnable) > 0 && w.dispatcher.CanSpawnMore() {
 				slots := w.config.Project.MaxAgents
@@ -293,7 +310,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				}
 				for i := 0; i < slots; i++ {
 					if err := w.SpawnTicket(ctx, spawnable[i]); err != nil {
-						return err
+						w.log("WARN: gate SpawnTicket(%s): %v", spawnable[i], err)
 					}
 				}
 			}
@@ -304,7 +321,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				_ = w.notifier.Info(ctx, "[dry-run] phase gate reached")
 			} else {
 				if err := w.appendEvent("phase_gate", "", nil); err != nil {
-					return err
+					w.log("WARN: appendEvent(phase_gate): %v", err)
 				}
 				_ = w.notifier.Info(ctx, "phase gate reached; run `swarm go` to continue")
 			}
@@ -317,7 +334,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		w.completionSent = true
 		report := w.buildCompletionReport()
 		if err := w.appendEvent("project_complete", "", nil); err != nil {
-			return err
+			w.log("WARN: appendEvent(project_complete): %v", err)
 		}
 		_ = w.notifier.Alert(ctx, report)
 	}
@@ -488,6 +505,7 @@ func (w *Watchdog) runningAgentCount(ctx context.Context) (int, error) {
 	}
 
 	count := 0
+	w.log("pass: %d running, checking exits", len(runningTicketIDs(w.tracker)))
 	for _, ticketID := range runningTicketIDs(w.tracker) {
 		if w.backend.IsAlive(backend.AgentHandle{SessionName: swarmSessionPrefix + ticketID}) {
 			count++
