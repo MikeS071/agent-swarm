@@ -173,3 +173,14 @@ This is the default. `auto_approve = true` skips steps 4-7 (used for trusted pip
 - `npx jest --ci --coverage` — all tests pass + coverage report
 - `npm run build` — production build succeeds
 - Fix any failures before committing
+
+## Codex exit code 1 after successful work
+
+Codex CLI frequently returns exit code 1 even when it completes successfully and commits. This happens when:
+- Any subprocess returned non-zero during the session (even if fixed afterwards)
+- The summary report lists any "issues" encountered
+- Internal error counter > 0
+
+**This is expected and not a bug.** The watchdog correctly handles this by checking for commits (not exit codes). If commits exist on the branch → ticket is done. If no commits → retry/fail.
+
+Never use exit codes to determine agent success. Always check git state.
