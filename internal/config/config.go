@@ -26,7 +26,8 @@ type ProjectConfig struct {
 	MaxAgents  int    `toml:"max_agents"`
 	MinRAMMB   int    `toml:"min_ram_mb"`
 	PromptDir  string `toml:"prompt_dir"`
-	Tracker    string `toml:"tracker"`
+	Tracker     string `toml:"tracker"`
+	AutoApprove bool   `toml:"auto_approve"`
 }
 
 type BackendConfig struct {
@@ -49,7 +50,6 @@ type WatchdogConfig struct {
 	MaxRuntime   string `toml:"max_runtime"`
 	StaleTimeout string `toml:"stale_timeout"`
 	MaxRetries   int    `toml:"max_retries"`
-	AutoApprove  bool   `toml:"auto_approve"`
 }
 
 type IntegrationConfig struct {

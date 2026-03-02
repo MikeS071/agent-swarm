@@ -319,7 +319,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 
 	sig, _ := w.dispatcher.Evaluate()
 	if sig == dispatcher.SignalPhaseGate {
-		if w.config.Watchdog.AutoApprove {
+		if w.config.Project.AutoApprove {
 			_ = w.notifier.Info(ctx, "phase gate reached — auto-approving")
 			approvedSig, spawnable := w.dispatcher.ApprovePhaseGate()
 			if err := w.saveTracker(); err != nil {

@@ -314,7 +314,7 @@ func (m model) renderList() string {
 
 	var b strings.Builder
 	modeTag := "manual"
-	if m.config.Watchdog.AutoApprove {
+	if m.config.Project.AutoApprove {
 		modeTag = "auto"
 	}
 	title := lipgloss.NewStyle().Bold(true).Render("agent-swarm — " + m.config.Project.Name + " [" + modeTag + "]")
@@ -590,7 +590,7 @@ func (m *model) toggleAutoApprove() {
 	if m.config == nil || len(m.projects) == 0 {
 		return
 	}
-	m.config.Watchdog.AutoApprove = !m.config.Watchdog.AutoApprove
+	m.config.Project.AutoApprove = !m.config.Project.AutoApprove
 	proj := m.projects[m.projectIndex]
 
 	// Write back to swarm.toml
@@ -600,14 +600,14 @@ func (m *model) toggleAutoApprove() {
 		return
 	}
 	updated := strings.Replace(string(raw),
-		fmt.Sprintf("auto_approve = %v", !m.config.Watchdog.AutoApprove),
-		fmt.Sprintf("auto_approve = %v", m.config.Watchdog.AutoApprove), 1)
+		fmt.Sprintf("auto_approve = %v", !m.config.Project.AutoApprove),
+		fmt.Sprintf("auto_approve = %v", m.config.Project.AutoApprove), 1)
 	if err := os.WriteFile(proj.configPath, []byte(updated), 0o644); err != nil {
 		m.lastErr = fmt.Errorf("write config: %w", err)
 		return
 	}
 	mode := "manual (phase gates)"
-	if m.config.Watchdog.AutoApprove {
+	if m.config.Project.AutoApprove {
 		mode = "auto (no gates)"
 	}
 	m.lastErr = fmt.Errorf("🔄 Switched to %s", mode)

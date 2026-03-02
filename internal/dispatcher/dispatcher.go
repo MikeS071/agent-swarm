@@ -247,7 +247,7 @@ func (d *Dispatcher) spawnableAcrossPhases() []string {
 		return nil
 	}
 	maxPhase := d.CurrentPhase()
-	if d.config.Watchdog.AutoApprove {
+	if d.config.Project.AutoApprove {
 		maxPhase = 9999 // no phase restriction when auto-approve is on
 	}
 	var ids []string
