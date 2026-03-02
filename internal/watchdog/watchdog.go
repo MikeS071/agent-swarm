@@ -84,6 +84,7 @@ type Watchdog struct {
 
 	dryRun      bool
 	retries     map[string]int
+	spawnErrors map[string]int
 	stuckAlerts map[string]bool
 	gateNoticed    bool
 	completionSent bool
@@ -121,6 +122,7 @@ func New(
 		notifier:    n,
 		events:      NewEventLog(eventsPath),
 		retries:     map[string]int{},
+		spawnErrors: map[string]int{},
 		stuckAlerts: map[string]bool{},
 	}
 }
@@ -267,7 +269,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		sig, spawnable := w.dispatcher.Evaluate()
 		w.log("idle check: signal=%s, spawnable=%d, running=%d", sig, len(spawnable), runningCount)
 		if sig == dispatcher.SignalSpawn && len(spawnable) > 0 && w.dispatcher.CanSpawnMore() {
-			slots := w.config.Project.MaxAgents
+			slots := w.config.Project.MaxAgents - runningCount
 			if slots <= 0 {
 				slots = 1
 			}
@@ -275,6 +277,10 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				slots = len(spawnable)
 			}
 			for i := 0; i < slots; i++ {
+				if !w.dispatcher.CanSpawnMore() {
+					w.log("capacity exhausted, deferring remaining spawns")
+					break
+				}
 				ticketID := spawnable[i]
 				if w.dryRun {
 					_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would idle-spawn %s", ticketID))
@@ -284,7 +290,16 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					w.log("WARN: appendEvent(idle_spawn, %s): %v", ticketID, err)
 				}
 				if err := w.SpawnTicket(ctx, ticketID); err != nil {
-					w.log("WARN: idle SpawnTicket(%s): %v", ticketID, err)
+					w.spawnErrors[ticketID]++
+					w.log("WARN: idle SpawnTicket(%s): %v (attempt %d/3)", ticketID, err, w.spawnErrors[ticketID])
+					if w.spawnErrors[ticketID] >= 3 {
+						w.log("ERROR: marking %s failed after 3 spawn failures", ticketID)
+						_ = w.dispatcher.MarkFailed(ticketID)
+						_ = w.saveTracker()
+						_ = w.notifier.Alert(ctx, fmt.Sprintf("ticket %s failed: spawn error after 3 attempts", ticketID))
+					}
+				} else {
+					delete(w.spawnErrors, ticketID)
 				}
 			}
 		}

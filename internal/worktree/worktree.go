@@ -60,6 +60,10 @@ func (m *Manager) Create(ticketID, branch string) (string, error) {
 		return "", err
 	}
 	path := m.Path(ticketID)
+	// Clean stale branch if it exists (e.g. from a previous failed run)
+	if _, err := m.git(m.RepoDir, "branch", "-D", branch); err == nil {
+		// branch deleted successfully — was stale
+	}
 	if _, err := m.git(m.RepoDir, "worktree", "add", "-b", branch, path, m.BaseBranch); err != nil {
 		return "", err
 	}

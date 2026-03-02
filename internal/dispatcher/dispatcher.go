@@ -239,9 +239,16 @@ func (d *Dispatcher) spawnableAcrossPhases() []string {
 	if d.tracker == nil {
 		return nil
 	}
+	maxPhase := d.CurrentPhase()
+	if d.config.Watchdog.AutoApprove {
+		maxPhase = 9999 // no phase restriction when auto-approve is on
+	}
 	var ids []string
 	for id, tk := range d.tracker.Tickets {
 		if tk.Status != tracker.StatusTodo {
+			continue
+		}
+		if tk.Phase > maxPhase {
 			continue
 		}
 		ready := true
