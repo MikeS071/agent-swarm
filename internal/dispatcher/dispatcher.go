@@ -57,6 +57,12 @@ func (d *Dispatcher) Evaluate() (Signal, []string) {
 	}
 
 	if d.phaseGateReached() {
+		if d.config.Project.AutoApprove {
+			// Auto-advance through the gate
+			d.ApprovePhaseGate()
+			// Re-evaluate after advancing
+			return d.evaluateAfterApprove()
+		}
 		return SignalPhaseGate, nil
 	}
 
@@ -72,6 +78,17 @@ func (d *Dispatcher) Evaluate() (Signal, []string) {
 		return SignalSpawn, crossPhase
 	}
 
+	return SignalBlocked, nil
+}
+
+func (d *Dispatcher) evaluateAfterApprove() (Signal, []string) {
+	if d.tracker.AllDone() {
+		return SignalAllDone, nil
+	}
+	spawnable := d.spawnableInPhase(d.CurrentPhase())
+	if len(spawnable) > 0 {
+		return SignalSpawn, spawnable
+	}
 	return SignalBlocked, nil
 }
 

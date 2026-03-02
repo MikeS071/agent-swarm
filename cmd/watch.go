@@ -46,6 +46,7 @@ var watchCmd = &cobra.Command{
 		n := buildNotifier(cfg)
 
 		wd := watchdog.New(cfg, tr, d, be, wt, n)
+		wd.SetConfigPath(cfgFile)
 		wd.SetDryRun(watchDryRun)
 
 		if watchOnce {

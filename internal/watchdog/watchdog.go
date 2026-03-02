@@ -74,6 +74,7 @@ func (l *EventLog) Append(ev Event) error {
 
 // Watchdog runs the self-healing watch loop.
 type Watchdog struct {
+	configPath string
 	config     *config.Config
 	tracker    *tracker.Tracker
 	dispatcher *dispatcher.Dispatcher
@@ -144,6 +145,12 @@ func (w *Watchdog) SetDryRun(v bool) {
 	}
 }
 
+func (w *Watchdog) SetConfigPath(p string) {
+	if w != nil {
+		w.configPath = p
+	}
+}
+
 // Run executes the watchdog loop at configured interval until ctx cancellation.
 func (w *Watchdog) Run(ctx context.Context) error {
 	interval := 5 * time.Minute
@@ -179,6 +186,13 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	}
 	if w.backend == nil || w.tracker == nil || w.dispatcher == nil || w.worktree == nil {
 		return fmt.Errorf("watchdog dependencies are not initialized")
+	}
+
+	// Re-read auto_approve from config file (TUI 'm' key writes to swarm.toml).
+	if w.configPath != "" {
+		if freshCfg, err := config.Load(w.configPath); err == nil {
+			w.config.Project.AutoApprove = freshCfg.Project.AutoApprove
+		}
 	}
 
 	// Re-read tracker from disk to pick up external changes (e.g. TUI phase gate approval).
