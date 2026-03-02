@@ -138,7 +138,8 @@ Interactive terminal dashboard showing all discovered projects.
 | `↑/↓` | Navigate tickets |
 | `k` | Kill selected agent |
 | `r` | Respawn selected ticket |
-| `g` | Approve phase gate |
+| `A` (or `g`) | Approve phase gate |
+| `[` / `]` | Previous / next page |
 | `p` | Cycle through projects |
 | `a` | Archive all done tickets |
 | `Tab` | Toggle compact view |
