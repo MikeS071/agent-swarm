@@ -264,6 +264,7 @@ func (m *model) rebuildRows() {
 		tk := m.tracker.Tickets[id]
 		row := ticketRow{
 			ID:      id,
+			Phase:   tk.Phase,
 			Desc:    tk.Desc,
 			Status:  tk.Status,
 			SHA:     tk.SHA,
