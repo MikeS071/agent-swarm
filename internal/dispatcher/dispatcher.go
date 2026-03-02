@@ -65,6 +65,13 @@ func (d *Dispatcher) Evaluate() (Signal, []string) {
 		return SignalSpawn, spawnable
 	}
 
+	// Current phase blocked (failed/running tickets) — look across all phases
+	// for any ticket whose deps are satisfied
+	crossPhase := d.spawnableAcrossPhases()
+	if len(crossPhase) > 0 {
+		return SignalSpawn, crossPhase
+	}
+
 	return SignalBlocked, nil
 }
 
@@ -186,7 +193,7 @@ func (d *Dispatcher) phaseGateReached() bool {
 		return false
 	}
 	for _, tk := range curTickets {
-		if tk.Status != tracker.StatusDone && tk.Status != tracker.StatusFailed {
+		if tk.Status != tracker.StatusDone {
 			return false
 		}
 	}
@@ -208,6 +215,32 @@ func (d *Dispatcher) spawnableInPhase(phase int) []string {
 	tickets := d.tracker.TicketsByPhase(phase)
 	ids := make([]string, 0, len(tickets))
 	for id, tk := range tickets {
+		if tk.Status != tracker.StatusTodo {
+			continue
+		}
+		ready := true
+		for _, dep := range tk.Depends {
+			dt, ok := d.tracker.Get(dep)
+			if !ok || dt.Status != tracker.StatusDone {
+				ready = false
+				break
+			}
+		}
+		if ready {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+
+func (d *Dispatcher) spawnableAcrossPhases() []string {
+	if d.tracker == nil {
+		return nil
+	}
+	var ids []string
+	for id, tk := range d.tracker.Tickets {
 		if tk.Status != tracker.StatusTodo {
 			continue
 		}
