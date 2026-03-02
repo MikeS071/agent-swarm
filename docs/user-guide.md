@@ -228,3 +228,12 @@ agent-swarm archive list
 In the TUI (`status --watch`), press `a` to archive done tickets for the current project.
 
 Archived tickets are stored in `swarm/archive.json` alongside the tracker.
+
+## Lessons Learned
+
+See [lessons-learned.md](lessons-learned.md) for hard-won operational knowledge covering:
+- Prompt engineering patterns (what works, what kills agents)
+- Watchdog failure modes and fixes
+- Common agent behaviour patterns and recovery workflows
+- Scaling configurations
+- Decapod governance integration
