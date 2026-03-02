@@ -208,8 +208,8 @@ func runLiveStatus(cfgFile string, cfg *config.Config) error {
 				deps = deps[:15] + "..."
 			}
 			desc := t.Desc
-			if len(desc) > 55 {
-				desc = desc[:52] + "..."
+			if len(desc) > 35 {
+				desc = desc[:32] + "..."
 			}
 			fmt.Fprintf(os.Stdout, "%-8s %5d  %s %-18s %s\n", id, t.Phase, paddedStatus, deps, desc)
 		}

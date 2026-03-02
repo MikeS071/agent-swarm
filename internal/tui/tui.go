@@ -328,7 +328,14 @@ func renderTicketRow(row ticketRow, selected bool, compact bool, width int) stri
 	if desc == "" {
 		desc = row.ID
 	}
-	line := fmt.Sprintf("%s %s %s", icon, row.ID, desc)
+	maxDesc := 30
+	if width > 100 {
+		maxDesc = 40
+	}
+	if len(desc) > maxDesc {
+		desc = desc[:maxDesc-1] + "…"
+	}
+	line := fmt.Sprintf("%s %-8s %-*s", icon, row.ID, maxDesc, desc)
 	if compact {
 		line = fmt.Sprintf("%s %s", line, styleForStatus(status).Render(label))
 	} else {
