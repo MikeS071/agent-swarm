@@ -1,0 +1,101 @@
+{
+  "project": "agent-swarm",
+  "tickets": {
+    "sw-01": {
+      "status": "done",
+      "phase": 1,
+      "depends": [],
+      "branch": "feat/sw-01",
+      "desc": "Scaffold + config + tracker (cobra root, swarm.toml loader, tracker CRUD, dep resolver)"
+    },
+    "sw-02": {
+      "status": "done",
+      "phase": 1,
+      "depends": [],
+      "branch": "feat/sw-02",
+      "desc": "Codex tmux backend (spawn, isAlive, getOutput, kill)"
+    },
+    "sw-03": {
+      "status": "done",
+      "phase": 1,
+      "depends": [],
+      "branch": "feat/sw-03",
+      "desc": "Dispatcher + phase gates (spawnable calc, signals, phase gate approval)"
+    },
+    "sw-04": {
+      "status": "done",
+      "phase": 1,
+      "depends": [],
+      "branch": "feat/sw-04",
+      "desc": "Worktree manager (create, remove, prune, list)"
+    },
+    "sw-05": {
+      "status": "done",
+      "phase": 2,
+      "depends": [
+        "sw-01",
+        "sw-02",
+        "sw-03"
+      ],
+      "branch": "feat/sw-05",
+      "desc": "Watchdog daemon (health loop, failure tracking, auto-chain, idle spawn)"
+    },
+    "sw-06": {
+      "status": "done",
+      "phase": 2,
+      "depends": [
+        "sw-01",
+        "sw-03"
+      ],
+      "branch": "feat/sw-06",
+      "desc": "TUI dashboard (bubbletea, progress tracking, keybindings)"
+    },
+    "sw-07": {
+      "status": "done",
+      "phase": 2,
+      "depends": [
+        "sw-01",
+        "sw-03",
+        "sw-05"
+      ],
+      "branch": "feat/sw-07",
+      "desc": "HTTP API + SSE server (swarm serve)"
+    },
+    "sw-08": {
+      "status": "done",
+      "phase": 2,
+      "depends": [
+        "sw-01",
+        "sw-04"
+      ],
+      "branch": "feat/sw-08",
+      "desc": "Integration command (swarm integrate — merge in dep order, verify, audit)"
+    },
+    "sw-09": {
+      "status": "done",
+      "phase": 3,
+      "depends": [
+        "sw-05",
+        "sw-06",
+        "sw-07",
+        "sw-08"
+      ],
+      "branch": "feat/sw-09",
+      "desc": "Final audit — build, test all, verify CLI commands, README, go install path"
+    },
+    "sw-10": {
+      "status": "done",
+      "phase": 4,
+      "depends": [],
+      "branch": "feat/sw-10",
+      "desc": "Archive command for done tickets"
+    },
+    "sw-11": {
+      "status": "done",
+      "phase": 4,
+      "depends": [],
+      "branch": "feat/sw-11",
+      "desc": "TUI startup and refresh performance"
+    }
+  }
+}

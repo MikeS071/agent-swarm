@@ -65,6 +65,14 @@ swarm install [--user] [--interval 5m] [--uninstall]
 
 swarm integrate [--base main] [--branch integration/v1] [--dry-run] [--continue]
   Merge done ticket branches in dependency order
+swarm archive [--phase N] [--dry-run]
+  Archive done tickets to swarm/archive.json
+
+swarm archive restore
+  Restore all archived tickets back to tracker
+
+swarm archive list
+  Show archived tickets
 ```
 
 ## Configuration (`swarm.toml`)
@@ -91,7 +99,7 @@ bypass_sandbox = true
 [notifications]
 type = "stdout"
 telegram_chat_id = ""
-telegram_token = ""
+telegram_token_cmd = "pass show apis/telegram-bot-token"  # shell command for token
 
 [watchdog]
 interval = "5m"
@@ -114,6 +122,30 @@ method = ""
 interval = "5m"
 run_mode = "timer"
 ```
+
+
+## TUI (`status --watch`)
+
+Interactive terminal dashboard showing all discovered projects.
+
+### Keybindings
+
+| Key | Action |
+|-----|--------|
+| `q` | Quit |
+| `Enter` | View agent output for selected ticket |
+| `Esc` | Back to list |
+| `↑/↓` | Navigate tickets |
+| `k` | Kill selected agent |
+| `r` | Respawn selected ticket |
+| `g` | Approve phase gate |
+| `p` | Cycle through projects |
+| `a` | Archive all done tickets |
+| `Tab` | Toggle compact view |
+
+### Multi-project discovery
+
+The TUI auto-discovers projects by scanning for `swarm.toml` files (depth 3, skips worktrees/node_modules/vendor). Projects are deduplicated by name.
 
 ## Architecture
 

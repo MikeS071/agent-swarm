@@ -203,3 +203,28 @@ Key endpoints:
 - **Monitor RAM:** Set `min_ram_mb` — watchdog won't spawn below threshold
 - **Phase gates are checkpoints:** Review, test, catch issues before building on them
 - **One commit per ticket:** Simplifies integration
+
+## Archiving Done Tickets
+
+After a swarm completes, clean up the tracker by archiving done tickets:
+
+```bash
+# Archive all done tickets
+agent-swarm archive
+
+# Archive only tickets from phase 2
+agent-swarm archive --phase 2
+
+# Preview what would be archived
+agent-swarm archive --dry-run
+
+# Restore all archived tickets
+agent-swarm archive restore
+
+# View archived tickets
+agent-swarm archive list
+```
+
+In the TUI (`status --watch`), press `a` to archive done tickets for the current project.
+
+Archived tickets are stored in `swarm/archive.json` alongside the tracker.
