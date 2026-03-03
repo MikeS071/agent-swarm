@@ -450,7 +450,17 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	srcPrompt := filepath.Join(w.config.Project.PromptDir, ticketID+".md")
 	promptBody, err := os.ReadFile(srcPrompt)
 	if err != nil {
-		return fmt.Errorf("read prompt %s: %w", srcPrompt, err)
+		// Auto-generate prompt from ticket description
+		tk, _ := w.tracker.Get(ticketID)
+		desc := tk.Desc
+		if desc == "" {
+			desc = "Implement " + ticketID
+		}
+		promptBody = []byte(fmt.Sprintf("# %s\n\n## Objective\n%s\n", ticketID, desc))
+		w.log("WARN: no prompt file for %s — auto-generated from description", ticketID)
+		// Also save it for future reference
+		_ = os.MkdirAll(filepath.Dir(srcPrompt), 0o755)
+		_ = os.WriteFile(srcPrompt, promptBody, 0o644)
 	}
 
 	promptPath := filepath.Join(workDir, ".codex-prompt.md")
