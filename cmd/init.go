@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
@@ -44,6 +46,11 @@ func scaffoldProject(project string) error {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("create directory %s: %w", d, err)
 		}
+	}
+
+	archived, err := archiveLegacyWorkflowFiles(root)
+	if err != nil {
+		return fmt.Errorf("archive legacy workflow files: %w", err)
 	}
 
 	// Write swarm.toml
@@ -106,7 +113,48 @@ func scaffoldProject(project string) error {
 	fmt.Printf("   swarm.toml + tracker.json\n")
 	fmt.Printf("   %d asset files (AGENTS.md, skills, profiles, rules)\n", copied)
 	fmt.Printf("   swarm/features/ — feature lifecycle directory\n")
+	if len(archived) > 0 {
+		fmt.Printf("   archived legacy workflow files: %s\n", strings.Join(archived, ", "))
+	}
 	return nil
+}
+
+func archiveLegacyWorkflowFiles(root string) ([]string, error) {
+	legacyFiles := []string{"WORKFLOW_AUTO.md", "sprint.json"}
+	existing := make([]string, 0, len(legacyFiles))
+	for _, name := range legacyFiles {
+		path := filepath.Join(root, name)
+		if _, err := os.Stat(path); err == nil {
+			existing = append(existing, name)
+			continue
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
+	}
+	if len(existing) == 0 {
+		return nil, nil
+	}
+
+	archiveDir := filepath.Join(root, "swarm", "archive", "legacy-workflow")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create archive dir %s: %w", archiveDir, err)
+	}
+
+	for _, name := range existing {
+		src := filepath.Join(root, name)
+		dst := filepath.Join(archiveDir, name)
+		if _, err := os.Stat(dst); err == nil {
+			return nil, fmt.Errorf("archive destination already exists: %s", dst)
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("stat %s: %w", dst, err)
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return nil, fmt.Errorf("move %s to %s: %w", src, dst, err)
+		}
+	}
+
+	sort.Strings(existing)
+	return existing, nil
 }
 
 // copyEmbedDir copies a single embedded file to destDir preserving filename.
