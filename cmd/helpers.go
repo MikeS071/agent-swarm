@@ -11,12 +11,13 @@ import (
 )
 
 func buildBackend(cfg *config.Config) (backend.AgentBackend, error) {
-	switch strings.TrimSpace(cfg.Backend.Type) {
-	case "", "codex-tmux":
-		return backend.NewCodexBackend(cfg.Backend.Binary, cfg.Backend.BypassSandbox), nil
-	default:
-		return nil, fmt.Errorf("unsupported backend type %q", cfg.Backend.Type)
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
 	}
+	return backend.Build(cfg.Backend.Type, backend.BuildOptions{
+		Binary:        cfg.Backend.Binary,
+		BypassSandbox: cfg.Backend.BypassSandbox,
+	})
 }
 
 func buildNotifier(cfg *config.Config) notify.Notifier {

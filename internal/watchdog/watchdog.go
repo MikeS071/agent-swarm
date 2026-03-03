@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,46 @@ import (
 
 const swarmSessionPrefix = "swarm-"
 
+const defaultPromptFooter = `
+---
+
+## MANDATORY DEVELOPMENT PROCESS (appended automatically — follow in exact order)
+
+### Phase 1: Understand the spec
+- Read the task objective and requirements above
+- Identify every behaviour, input, output, and error case
+
+### Phase 2: Write tests FIRST (before any implementation code)
+- Write failing tests that define the expected behaviour from the spec
+- Min 3 test cases per function: happy path, error path, edge case
+- Table-driven tests where applicable
+- Mock external dependencies (DB, HTTP, Docker) — no real connections
+- Run tests — they SHOULD fail (red). This confirms they test real behaviour.
+
+### Phase 3: Implement
+- Write the minimum code to make all tests pass
+- Do NOT write code that isn't covered by a test
+
+### Phase 4: Quality gates (run in order, fix and re-run from gate 1 on failure)
+1. **Tests pass:** ` + "`go test ./... -count=1`" + ` (Go) or ` + "`pnpm test`" + ` (Web/TS)
+2. **Build passes:** ` + "`go build ./...`" + ` (Go) or ` + "`pnpm build`" + ` (Web/TS)
+3. **Types/Lint:** ` + "`go vet ./...`" + ` (Go) or ` + "`pnpm typecheck`" + ` (Web/TS)
+4. Iterate until all green
+
+### Phase 5: Commit (only after ALL gates pass)
+` + "```bash" + `
+git add -A
+git commit -m "feat: <description>
+
+Tests: X passed, 0 failed"
+git push origin HEAD
+` + "```" + `
+
+Do NOT exit without committing and pushing.
+Do NOT commit if any gate is failing.
+Do NOT write implementation before tests.
+`
+
 // Event is a single append-only watchdog event log entry.
 type Event struct {
 	Type      string         `json:"type"`
@@ -34,6 +75,20 @@ type Event struct {
 type EventLog struct {
 	path string
 	mu   sync.Mutex
+}
+
+type reviewReport struct {
+	Findings []reviewFinding `json:"findings"`
+}
+
+type reviewFinding struct {
+	Severity     string `json:"severity"`
+	Category     string `json:"category"`
+	File         string `json:"file"`
+	Line         int    `json:"line"`
+	Title        string `json:"title"`
+	Description  string `json:"description"`
+	SuggestedFix string `json:"suggested_fix"`
 }
 
 // NewEventLog creates an append-only event log writer.
@@ -83,10 +138,14 @@ type Watchdog struct {
 	notifier   notify.Notifier
 	events     *EventLog
 
-	dryRun      bool
-	retries     map[string]int
-	spawnErrors map[string]int
-	stuckAlerts map[string]bool
+	backendFactory func(backendType string) (backend.AgentBackend, error)
+	backendCache   map[string]backend.AgentBackend
+	backendMu      sync.Mutex
+
+	dryRun         bool
+	retries        map[string]int
+	spawnErrors    map[string]int
+	stuckAlerts    map[string]bool
 	gateNoticed    bool
 	completionSent bool
 	logger         *log.Logger
@@ -114,18 +173,39 @@ func New(
 	if cfg != nil && strings.TrimSpace(cfg.Project.Tracker) != "" {
 		eventsPath = filepath.Join(filepath.Dir(cfg.Project.Tracker), "events.jsonl")
 	}
-	return &Watchdog{
-		config:      cfg,
-		tracker:     tr,
-		dispatcher:  d,
-		backend:     be,
-		worktree:    wt,
-		notifier:    n,
-		events:      NewEventLog(eventsPath),
-		retries:     map[string]int{},
-		spawnErrors: map[string]int{},
-		stuckAlerts: map[string]bool{},
+
+	cache := map[string]backend.AgentBackend{}
+	defaultType := normalizedBackendType("")
+	if cfg != nil {
+		defaultType = normalizedBackendType(cfg.Backend.Type)
 	}
+	if be != nil {
+		cache[defaultType] = be
+	}
+
+	w := &Watchdog{
+		config:       cfg,
+		tracker:      tr,
+		dispatcher:   d,
+		backend:      be,
+		worktree:     wt,
+		notifier:     n,
+		events:       NewEventLog(eventsPath),
+		backendCache: cache,
+		retries:      map[string]int{},
+		spawnErrors:  map[string]int{},
+		stuckAlerts:  map[string]bool{},
+	}
+	w.backendFactory = func(backendType string) (backend.AgentBackend, error) {
+		if w.config == nil {
+			return backend.Build(backendType, backend.BuildOptions{})
+		}
+		return backend.Build(backendType, backend.BuildOptions{
+			Binary:        w.config.Backend.Binary,
+			BypassSandbox: w.config.Backend.BypassSandbox,
+		})
+	}
+	return w
 }
 
 // SetDryRun toggles non-mutating evaluation mode.
@@ -214,12 +294,14 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	w.log("pass: %d running, checking exits", len(runningTicketIDs(w.tracker)))
 	for _, ticketID := range runningTicketIDs(w.tracker) {
 		tk := w.tracker.Tickets[ticketID]
-		handle := backend.AgentHandle{SessionName: swarmSessionPrefix + ticketID}
-		if ts := parseTimestamp(tk.StartedAt); !ts.IsZero() {
-			handle.StartedAt = ts
+		handle := w.sessionHandleForTicket(ticketID, tk)
+		runningBackend, _, err := w.runtimeBackendForTicket(tk)
+		if err != nil {
+			w.log("WARN: backend for %s: %v", ticketID, err)
+			continue
 		}
 
-		if w.backend.HasExited(handle) {
+		if runningBackend.HasExited(handle) {
 			hasCommits, sha, err := w.worktree.HasCommits(ticketID, w.config.Project.BaseBranch)
 			if err != nil {
 				w.log("WARN: HasCommits(%s) error: %v — treating as no commits", ticketID, err)
@@ -233,6 +315,11 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				}
 				sig, spawnable := w.dispatcher.MarkDone(ticketID, sha)
 				delete(w.retries, ticketID)
+				if created, err := w.autoCreateFixTickets(ticketID); err != nil {
+					w.log("WARN: autoCreateFixTickets(%s): %v", ticketID, err)
+				} else if created > 0 {
+					sig, spawnable = w.dispatcher.Evaluate()
+				}
 				// Clean up agent log on successful completion
 				if w.config != nil && w.config.Project.Tracker != "" {
 					logFile := filepath.Join(filepath.Dir(w.config.Project.Tracker), "logs", ticketID+".log")
@@ -285,10 +372,14 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			continue
 		}
 
-		if w.backend.IsAlive(handle) && w.runtimeExceeded(tk.StartedAt) && !w.stuckAlerts[ticketID] {
+		if runningBackend.IsAlive(handle) && w.runtimeExceeded(tk.StartedAt) && !w.stuckAlerts[ticketID] {
 			w.stuckAlerts[ticketID] = true
 			_ = w.notifier.Alert(ctx, fmt.Sprintf("ticket %s may be stuck (exceeded max_runtime)", ticketID))
 		}
+	}
+
+	if err := w.ensurePostBuildTickets(ctx); err != nil {
+		w.log("WARN: ensurePostBuildTickets: %v", err)
 	}
 
 	runningCount, err := w.runningAgentCount(ctx)
@@ -464,24 +555,30 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	}
 
 	// Assemble layered prompt: governance → spec → profile → ticket → footer
-	assembled := w.assemblePrompt(tk, promptBody)
+	assembled := w.assemblePromptForTicket(ticketID, tk, promptBody)
 
 	promptPath := filepath.Join(workDir, ".codex-prompt.md")
 	if err := os.WriteFile(promptPath, assembled, 0o644); err != nil {
 		return fmt.Errorf("write prompt %s: %w", promptPath, err)
 	}
 
+	spawnBackend, spawnBackendType, err := w.spawnBackendForTicket(ticketID, tk)
+	if err != nil {
+		return err
+	}
+	model := w.resolveSpawnModelForBackend(ticketID, tk, spawnBackendType)
+
 	if w.dryRun {
 		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would spawn %s", ticketID))
 		return nil
 	}
 
-	handle, err := w.backend.Spawn(ctx, backend.SpawnConfig{
-		TicketID:   ticketID,
-		Branch:     branch,
-		WorkDir:    workDir,
-		PromptFile: promptPath,
-		Model:      w.config.Backend.Model,
+	handle, err := spawnBackend.Spawn(ctx, backend.SpawnConfig{
+		TicketID:    ticketID,
+		Branch:      branch,
+		WorkDir:     workDir,
+		PromptFile:  promptPath,
+		Model:       model,
 		Effort:      w.config.Backend.Effort,
 		ProjectName: w.config.Project.Name,
 	})
@@ -494,18 +591,136 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	if tk.Branch == "" {
 		tk.Branch = branch
 	}
+	tk.SessionName = strings.TrimSpace(handle.SessionName)
+	if tk.SessionName == "" {
+		tk.SessionName = w.sessionNameForTicket(ticketID)
+	}
+	tk.SessionBackend = spawnBackendType
+	tk.SessionModel = model
 	w.tracker.Tickets[ticketID] = tk
 
 	if err := w.saveTracker(); err != nil {
 		return err
 	}
-	return w.appendEvent("ticket_spawned", ticketID, map[string]any{"session": handle.SessionName})
+	return w.appendEvent("ticket_spawned", ticketID, map[string]any{
+		"session": handle.SessionName,
+		"backend": spawnBackendType,
+		"model":   model,
+	})
+}
+
+func (w *Watchdog) spawnBackendForTicket(ticketID string, tk tracker.Ticket) (backend.AgentBackend, string, error) {
+	requested := w.resolveSpawnBackendType(ticketID, tk)
+	be, resolvedType, err := w.backendForType(requested)
+	if err == nil {
+		return be, resolvedType, nil
+	}
+	fallbackType := w.defaultBackendType()
+	if resolvedType != fallbackType {
+		if fb, _, ferr := w.backendForType(fallbackType); ferr == nil {
+			w.log("WARN: backend %q unavailable for %s; falling back to %q", resolvedType, ticketID, fallbackType)
+			return fb, fallbackType, nil
+		}
+	}
+	return nil, resolvedType, err
+}
+
+func (w *Watchdog) runtimeBackendForTicket(tk tracker.Ticket) (backend.AgentBackend, string, error) {
+	requested := strings.TrimSpace(tk.SessionBackend)
+	if requested == "" {
+		requested = w.defaultBackendType()
+	}
+	be, resolvedType, err := w.backendForType(requested)
+	if err == nil {
+		return be, resolvedType, nil
+	}
+	fallbackType := w.defaultBackendType()
+	if resolvedType != fallbackType {
+		if fb, _, ferr := w.backendForType(fallbackType); ferr == nil {
+			w.log("WARN: backend %q unavailable for running session; falling back to %q", resolvedType, fallbackType)
+			return fb, fallbackType, nil
+		}
+	}
+	return nil, resolvedType, err
+}
+
+func (w *Watchdog) backendForType(backendType string) (backend.AgentBackend, string, error) {
+	key := normalizedBackendType(backendType)
+	if w == nil {
+		return nil, key, fmt.Errorf("watchdog is nil")
+	}
+
+	w.backendMu.Lock()
+	defer w.backendMu.Unlock()
+
+	if w.backendCache == nil {
+		w.backendCache = map[string]backend.AgentBackend{}
+	}
+	if be, ok := w.backendCache[key]; ok && be != nil {
+		return be, key, nil
+	}
+
+	if w.backend != nil && key == w.defaultBackendType() {
+		w.backendCache[key] = w.backend
+		return w.backend, key, nil
+	}
+	if w.backendFactory == nil {
+		return nil, key, fmt.Errorf("backend factory is not configured")
+	}
+
+	be, err := w.backendFactory(key)
+	if err != nil {
+		return nil, key, err
+	}
+	w.backendCache[key] = be
+	return be, key, nil
+}
+
+func (w *Watchdog) defaultBackendType() string {
+	if w == nil || w.config == nil {
+		return normalizedBackendType("")
+	}
+	return normalizedBackendType(w.config.Backend.Type)
+}
+
+func normalizedBackendType(v string) string {
+	n := strings.ToLower(strings.TrimSpace(v))
+	if n == "" {
+		return backend.TypeCodexTmux
+	}
+	return n
+}
+
+func (w *Watchdog) sessionNameForTicket(ticketID string) string {
+	if w != nil && w.config != nil && strings.TrimSpace(w.config.Project.Name) != "" {
+		return swarmSessionPrefix + strings.TrimSpace(w.config.Project.Name) + "_" + ticketID
+	}
+	return swarmSessionPrefix + ticketID
+}
+
+func (w *Watchdog) sessionHandleForTicket(ticketID string, tk tracker.Ticket) backend.AgentHandle {
+	sessionName := strings.TrimSpace(tk.SessionName)
+	if sessionName == "" {
+		sessionName = w.sessionNameForTicket(ticketID)
+	}
+	h := backend.AgentHandle{SessionName: sessionName}
+	if ts := parseTimestamp(tk.StartedAt); !ts.IsZero() {
+		h.StartedAt = ts
+	}
+	return h
 }
 
 // projectRoot returns the project root directory (parent of swarm/).
 func (w *Watchdog) projectRoot() string {
+	if w == nil || w.config == nil {
+		return ""
+	}
+	trackerPath := strings.TrimSpace(w.config.Project.Tracker)
+	if trackerPath == "" {
+		return ""
+	}
 	// Tracker is at swarm/tracker.json — go up two levels
-	return filepath.Dir(filepath.Dir(w.config.Project.Tracker))
+	return filepath.Dir(filepath.Dir(trackerPath))
 }
 
 // assemblePrompt builds the full layered prompt:
@@ -515,8 +730,13 @@ func (w *Watchdog) projectRoot() string {
 // Layer 4: ticket prompt (the actual task)
 // Layer 5: footer (quality gates, commit rules)
 func (w *Watchdog) assemblePrompt(tk tracker.Ticket, ticketPrompt []byte) []byte {
+	return w.assemblePromptForTicket("", tk, ticketPrompt)
+}
+
+func (w *Watchdog) assemblePromptForTicket(ticketID string, tk tracker.Ticket, ticketPrompt []byte) []byte {
 	var parts [][]byte
 	root := w.projectRoot()
+	profileName := w.selectProfileName(ticketID, tk)
 
 	// Layer 1: AGENTS.md
 	agentsPath := filepath.Join(root, "AGENTS.md")
@@ -536,11 +756,7 @@ func (w *Watchdog) assemblePrompt(tk tracker.Ticket, ticketPrompt []byte) []byte
 		}
 	}
 
-	// Layer 3: profile (ticket-level overrides project default)
-	profileName := tk.Profile
-	if profileName == "" {
-		profileName = w.config.Project.DefaultProfile
-	}
+	// Layer 3: profile (ticket-level overrides inferred/default profile)
 	if profileName != "" {
 		profilePath := filepath.Join(root, ".agents", "profiles", profileName+".md")
 		if data, err := os.ReadFile(profilePath); err == nil {
@@ -555,12 +771,224 @@ func (w *Watchdog) assemblePrompt(tk tracker.Ticket, ticketPrompt []byte) []byte
 	parts = append(parts, ticketPrompt)
 
 	// Layer 5: footer
-	footerPath := filepath.Join(filepath.Dir(w.config.Project.PromptDir), "prompt-footer.md")
-	if data, err := os.ReadFile(footerPath); err == nil {
-		parts = append(parts, data)
+	parts = append(parts, loadPromptFooter(w.config.Project.PromptDir))
+	if suffix := reviewOutputSuffix(profileName); len(suffix) > 0 {
+		parts = append(parts, suffix)
 	}
 
 	return joinParts(parts)
+}
+
+func loadPromptFooter(promptDir string) []byte {
+	footerPath := filepath.Join(filepath.Dir(promptDir), "prompt-footer.md")
+	if data, err := os.ReadFile(footerPath); err == nil {
+		if strings.TrimSpace(string(data)) != "" {
+			return data
+		}
+	}
+	return []byte(defaultPromptFooter)
+}
+
+func (w *Watchdog) selectProfileName(ticketID string, tk tracker.Ticket) string {
+	if profile := strings.TrimSpace(tk.Profile); profile != "" {
+		return profile
+	}
+	if inferred := inferProfileFromTicketID(ticketID); inferred != "" {
+		return inferred
+	}
+	if w == nil || w.config == nil {
+		return ""
+	}
+	return strings.TrimSpace(w.config.Project.DefaultProfile)
+}
+
+func inferProfileFromTicketID(ticketID string) string {
+	id := strings.ToLower(strings.TrimSpace(ticketID))
+	switch {
+	case strings.HasPrefix(id, "arch-"), strings.HasPrefix(id, "arc-"):
+		return "architect"
+	case strings.HasPrefix(id, "gap-"), strings.HasPrefix(id, "review-"), strings.HasPrefix(id, "rev-"), strings.HasPrefix(id, "mem-"):
+		return "code-reviewer"
+	case strings.HasPrefix(id, "sec-"):
+		return "security-reviewer"
+	case strings.HasPrefix(id, "tst-"):
+		return "e2e-runner"
+	case strings.HasPrefix(id, "doc-"):
+		return "doc-updater"
+	case strings.HasPrefix(id, "clean-"), strings.HasPrefix(id, "cln-"):
+		return "refactor-cleaner"
+	case strings.HasPrefix(id, "fix-"):
+		return "code-agent"
+	default:
+		return ""
+	}
+}
+
+func (w *Watchdog) resolveSpawnModel(ticketID string, tk tracker.Ticket) string {
+	return w.resolveSpawnModelForBackend(ticketID, tk, w.defaultBackendType())
+}
+
+func (w *Watchdog) resolveSpawnModelForBackend(ticketID string, tk tracker.Ticket, backendType string) string {
+	defaultModel := ""
+	if w != nil && w.config != nil {
+		defaultModel = strings.TrimSpace(w.config.Backend.Model)
+	}
+
+	profileName := w.selectProfileName(ticketID, tk)
+	if profileName == "" {
+		return defaultModel
+	}
+
+	profileModel := w.profileFrontmatterModel(profileName)
+	if profileModel == "" {
+		return defaultModel
+	}
+
+	if isCodexBackendType(backendType) && !isCodexCompatibleModel(profileModel) {
+		w.log("WARN: profile %q requested model %q; backend %q using fallback %q", profileName, profileModel, backendType, defaultModel)
+		return defaultModel
+	}
+
+	return profileModel
+}
+
+func (w *Watchdog) resolveSpawnBackendType(ticketID string, tk tracker.Ticket) string {
+	defaultType := w.defaultBackendType()
+	profileName := w.selectProfileName(ticketID, tk)
+	if profileName == "" {
+		return defaultType
+	}
+	profileBackend := w.profileFrontmatterBackend(profileName)
+	if profileBackend == "" {
+		return defaultType
+	}
+	return profileBackend
+}
+
+func (w *Watchdog) profileFrontmatterModel(profileName string) string {
+	root := w.projectRoot()
+	if root == "" || strings.TrimSpace(profileName) == "" {
+		return ""
+	}
+	profilePath := filepath.Join(root, ".agents", "profiles", profileName+".md")
+	data, err := os.ReadFile(profilePath)
+	if err != nil {
+		return ""
+	}
+	return parseProfileFrontmatterModel(data)
+}
+
+func (w *Watchdog) profileFrontmatterBackend(profileName string) string {
+	root := w.projectRoot()
+	if root == "" || strings.TrimSpace(profileName) == "" {
+		return ""
+	}
+	profilePath := filepath.Join(root, ".agents", "profiles", profileName+".md")
+	data, err := os.ReadFile(profilePath)
+	if err != nil {
+		return ""
+	}
+	return parseProfileFrontmatterBackend(data)
+}
+
+func parseProfileFrontmatterModel(data []byte) string {
+	return parseProfileFrontmatterValue(data, "model")
+}
+
+func parseProfileFrontmatterBackend(data []byte) string {
+	v := parseProfileFrontmatterValue(data, "backend")
+	if v == "" {
+		return ""
+	}
+	return normalizedBackendType(v)
+}
+
+func parseProfileFrontmatterValue(data []byte, key string) string {
+	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	content = strings.TrimPrefix(content, "\ufeff")
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return ""
+	}
+
+	end := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			end = i
+			break
+		}
+	}
+	if end == -1 {
+		return ""
+	}
+
+	for i := 1; i < end; i++ {
+		k, v, ok := strings.Cut(lines[i], ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(k), key) {
+			continue
+		}
+		value := strings.TrimSpace(v)
+		value = strings.Trim(value, "'\"")
+		value = strings.TrimSpace(value)
+		return value
+	}
+	return ""
+}
+
+func isCodexBackendType(backendType string) bool {
+	bt := normalizedBackendType(backendType)
+	return bt == backend.TypeCodexTmux
+}
+
+func isCodexCompatibleModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return false
+	}
+	if strings.HasPrefix(m, "gpt-") || strings.Contains(m, "codex") {
+		return true
+	}
+	return strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3") || strings.HasPrefix(m, "o4")
+}
+
+func reviewOutputSuffix(profileName string) []byte {
+	path := ""
+	switch strings.TrimSpace(profileName) {
+	case "code-reviewer":
+		path = "swarm/features/<feature>/review-report.json"
+	case "security-reviewer":
+		path = "swarm/features/<feature>/sec-report.json"
+	default:
+		return nil
+	}
+	return []byte(fmt.Sprintf(`## OUTPUT FORMAT (mandatory)
+
+You are a READ-ONLY reviewer. Do NOT modify any source files.
+
+Output your findings as a JSON file at %q.
+
+Use this exact schema:
+{
+  "findings": [
+    {
+      "severity": "critical|high|medium|low",
+      "category": "security|correctness|performance|style|documentation",
+      "file": "path/to/file",
+      "line": 42,
+      "title": "Short description",
+      "description": "What is wrong and why it matters",
+      "suggested_fix": "Specific action to take"
+    }
+  ],
+  "verdict": "BLOCK|WARN|PASS",
+  "summary": "N critical, N high, N medium findings"
+}
+
+Severity levels: critical, high, medium, low
+Verdict: BLOCK if any critical or high. WARN if only medium/low. PASS if clean.
+
+After writing the JSON, commit and push it.
+`, path))
 }
 
 // joinParts concatenates byte slices with double-newline separators.
@@ -580,7 +1008,183 @@ func joinParts(parts [][]byte) []byte {
 	return buf
 }
 
+func parseReviewSource(ticketID string) (feature, reportName string, ok bool) {
+	if strings.HasPrefix(ticketID, "review-") && len(ticketID) > len("review-") {
+		return strings.TrimPrefix(ticketID, "review-"), "review-report.json", true
+	}
+	if strings.HasPrefix(ticketID, "sec-") && len(ticketID) > len("sec-") {
+		return strings.TrimPrefix(ticketID, "sec-"), "sec-report.json", true
+	}
+	return "", "", false
+}
 
+func isActionableSeverity(severity string) bool {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical", "high":
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *Watchdog) nextFixIndex(feature string) int {
+	prefix := "fix-" + feature + "-"
+	next := 1
+	for id := range w.tracker.Tickets {
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		n, err := parseFixTicketIndex(id, prefix)
+		if err != nil {
+			continue
+		}
+		if n >= next {
+			next = n + 1
+		}
+	}
+	return next
+}
+
+func parseFixTicketIndex(ticketID, prefix string) (int, error) {
+	raw := strings.TrimPrefix(ticketID, prefix)
+	if raw == ticketID || raw == "" {
+		return 0, fmt.Errorf("invalid fix ticket id %q", ticketID)
+	}
+	var n int
+	if _, err := fmt.Sscanf(raw, "%d", &n); err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid fix ticket number in %q", ticketID)
+	}
+	if fmt.Sprintf("%d", n) != raw {
+		return 0, fmt.Errorf("invalid fix ticket suffix in %q", ticketID)
+	}
+	return n, nil
+}
+
+func (w *Watchdog) resolvePromptDir() string {
+	promptDir := w.config.Project.PromptDir
+	if filepath.IsAbs(promptDir) {
+		return promptDir
+	}
+	return filepath.Join(w.projectRoot(), promptDir)
+}
+
+func (w *Watchdog) autoCreateFixTickets(ticketID string) (int, error) {
+	if w == nil || w.tracker == nil || w.config == nil {
+		return 0, nil
+	}
+	src, ok := w.tracker.Get(ticketID)
+	if !ok {
+		return 0, nil
+	}
+	feature, reportName, ok := parseReviewSource(ticketID)
+	if !ok {
+		return 0, nil
+	}
+	reportPath := filepath.Join(w.projectRoot(), "swarm", "features", feature, reportName)
+	body, err := os.ReadFile(reportPath)
+	if err != nil {
+		return 0, fmt.Errorf("read findings report %s: %w", reportPath, err)
+	}
+
+	var report reviewReport
+	if err := json.Unmarshal(body, &report); err != nil {
+		return 0, fmt.Errorf("parse findings report %s: %w", reportPath, err)
+	}
+
+	actionable := make([]reviewFinding, 0)
+	for _, finding := range report.Findings {
+		if isActionableSeverity(finding.Severity) {
+			actionable = append(actionable, finding)
+		}
+	}
+	if len(actionable) == 0 {
+		return 0, nil
+	}
+
+	promptDir := w.resolvePromptDir()
+	if err := os.MkdirAll(promptDir, 0o755); err != nil {
+		return 0, fmt.Errorf("mkdir prompt dir %s: %w", promptDir, err)
+	}
+
+	next := w.nextFixIndex(feature)
+	created := 0
+	for _, finding := range actionable {
+		fixID := fmt.Sprintf("fix-%s-%d", feature, next)
+		next++
+		w.tracker.Tickets[fixID] = tracker.Ticket{
+			Status:  tracker.StatusTodo,
+			Phase:   src.Phase,
+			Depends: []string{ticketID},
+			Branch:  "feat/" + fixID,
+			Desc:    fixTicketDesc(finding),
+			Profile: "code-agent",
+		}
+
+		promptPath := filepath.Join(promptDir, fixID+".md")
+		prompt := buildFixPrompt(fixID, ticketID, finding)
+		if err := os.WriteFile(promptPath, []byte(prompt), 0o644); err != nil {
+			return created, fmt.Errorf("write fix prompt %s: %w", promptPath, err)
+		}
+		if err := w.appendEvent("fix_ticket_created", fixID, map[string]any{
+			"source_ticket": ticketID,
+			"severity":      strings.ToLower(strings.TrimSpace(finding.Severity)),
+		}); err != nil {
+			w.log("WARN: appendEvent(fix_ticket_created, %s): %v", fixID, err)
+		}
+		created++
+	}
+	return created, nil
+}
+
+func fixTicketDesc(finding reviewFinding) string {
+	title := strings.TrimSpace(finding.Title)
+	if title == "" {
+		title = "Review finding"
+	}
+	return fmt.Sprintf("Fix %s finding: %s", strings.ToLower(strings.TrimSpace(finding.Severity)), title)
+}
+
+func buildFixPrompt(fixID, sourceTicket string, finding reviewFinding) string {
+	var b strings.Builder
+	b.WriteString("# ")
+	b.WriteString(fixID)
+	b.WriteString("\n\n## Objective\n")
+	b.WriteString("Fix a blocking finding from ")
+	b.WriteString(sourceTicket)
+	b.WriteString(".\n\n## Finding\n")
+	b.WriteString("- Severity: ")
+	b.WriteString(strings.ToLower(strings.TrimSpace(finding.Severity)))
+	b.WriteString("\n")
+	if strings.TrimSpace(finding.Category) != "" {
+		b.WriteString("- Category: ")
+		b.WriteString(strings.TrimSpace(finding.Category))
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(finding.File) != "" {
+		b.WriteString("- File: ")
+		b.WriteString(strings.TrimSpace(finding.File))
+		if finding.Line > 0 {
+			b.WriteString(fmt.Sprintf(":%d", finding.Line))
+		}
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(finding.Title) != "" {
+		b.WriteString("- Title: ")
+		b.WriteString(strings.TrimSpace(finding.Title))
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(finding.Description) != "" {
+		b.WriteString("- Description: ")
+		b.WriteString(strings.TrimSpace(finding.Description))
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(finding.SuggestedFix) != "" {
+		b.WriteString("- Suggested fix: ")
+		b.WriteString(strings.TrimSpace(finding.SuggestedFix))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
 func (w *Watchdog) appendEvent(eventType, ticketID string, data map[string]any) error {
 	if w.events == nil || w.dryRun {
 		return nil
@@ -626,13 +1230,13 @@ func (w *Watchdog) runningAgentCount(ctx context.Context) (int, error) {
 	}
 
 	count := 0
-	w.log("pass: %d running, checking exits", len(runningTicketIDs(w.tracker)))
 	for _, ticketID := range runningTicketIDs(w.tracker) {
-		sessName := swarmSessionPrefix + ticketID
-		if w.config.Project.Name != "" {
-			sessName = swarmSessionPrefix + w.config.Project.Name + "_" + ticketID
+		tk := w.tracker.Tickets[ticketID]
+		runningBackend, _, err := w.runtimeBackendForTicket(tk)
+		if err != nil {
+			return 0, err
 		}
-		if w.backend.IsAlive(backend.AgentHandle{SessionName: sessName}) {
+		if runningBackend.IsAlive(w.sessionHandleForTicket(ticketID, tk)) {
 			count++
 		}
 	}
@@ -643,16 +1247,75 @@ func (w *Watchdog) listRunningSessions(ctx context.Context) ([]string, error) {
 	type projectSessionLister interface {
 		ListSessionsForProject(context.Context, string) ([]string, error)
 	}
-	if lister, ok := w.backend.(projectSessionLister); ok {
-		return lister.ListSessionsForProject(ctx, w.config.Project.Name)
-	}
 	type sessionLister interface {
 		ListSessions(context.Context) ([]string, error)
 	}
-	if lister, ok := w.backend.(sessionLister); ok {
-		return lister.ListSessions(ctx)
+
+	types := map[string]struct{}{w.defaultBackendType(): {}}
+	for _, ticketID := range runningTicketIDs(w.tracker) {
+		tk := w.tracker.Tickets[ticketID]
+		if bt := strings.TrimSpace(tk.SessionBackend); bt != "" {
+			types[normalizedBackendType(bt)] = struct{}{}
+		}
 	}
-	return nil, nil
+
+	projectName := ""
+	if w != nil && w.config != nil {
+		projectName = w.config.Project.Name
+	}
+
+	usedLister := false
+	set := map[string]struct{}{}
+	keys := make([]string, 0, len(types))
+	for k := range types {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, backendType := range keys {
+		be, _, err := w.backendForType(backendType)
+		if err != nil {
+			return nil, err
+		}
+		if lister, ok := be.(projectSessionLister); ok {
+			usedLister = true
+			sessions, err := lister.ListSessionsForProject(ctx, projectName)
+			if err != nil {
+				return nil, err
+			}
+			for _, s := range sessions {
+				if strings.TrimSpace(s) == "" {
+					continue
+				}
+				set[s] = struct{}{}
+			}
+			continue
+		}
+		if lister, ok := be.(sessionLister); ok {
+			usedLister = true
+			sessions, err := lister.ListSessions(ctx)
+			if err != nil {
+				return nil, err
+			}
+			for _, s := range sessions {
+				if strings.TrimSpace(s) == "" {
+					continue
+				}
+				set[s] = struct{}{}
+			}
+		}
+	}
+
+	if !usedLister {
+		return nil, nil
+	}
+
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func runningTicketIDs(tr *tracker.Tracker) []string {
@@ -679,4 +1342,414 @@ func parseTimestamp(v string) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+type buildFeatureStatus struct {
+	BuildIDs          []string
+	BuildDone         int
+	BuildTotal        int
+	MaxBuildPhase     int
+	PostBuildStepsSet map[string]bool
+}
+
+func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
+	order, parallelGroups, enabled := w.postBuildPlan()
+	if !enabled || w.tracker == nil {
+		return nil
+	}
+
+	features := w.collectBuildFeatureStatus(order)
+	if len(features) == 0 {
+		return nil
+	}
+
+	featureNames := make([]string, 0, len(features))
+	for feature, fs := range features {
+		if fs.BuildTotal == 0 || fs.BuildDone != fs.BuildTotal {
+			continue
+		}
+		missing := false
+		for _, step := range order {
+			if !fs.PostBuildStepsSet[step] {
+				missing = true
+				break
+			}
+		}
+		if missing {
+			featureNames = append(featureNames, feature)
+		}
+	}
+	if len(featureNames) == 0 {
+		return nil
+	}
+	sort.Strings(featureNames)
+
+	if w.dryRun {
+		for _, feature := range featureNames {
+			_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would create post-build tickets for feature %s", feature))
+		}
+		return nil
+	}
+
+	changed := false
+	for _, feature := range featureNames {
+		fs := features[feature]
+		created := w.createPostBuildTicketsForFeature(feature, fs, order, parallelGroups)
+		if created == 0 {
+			continue
+		}
+		changed = true
+		msg := fmt.Sprintf("feature %s build complete — created %d post-build tickets", feature, created)
+		_ = w.notifier.Info(ctx, msg)
+		if err := w.appendEvent("post_build_generated", "", map[string]any{
+			"feature": feature,
+			"created": created,
+		}); err != nil {
+			w.log("WARN: appendEvent(post_build_generated, %s): %v", feature, err)
+		}
+	}
+
+	if changed {
+		return w.saveTracker()
+	}
+	return nil
+}
+
+func (w *Watchdog) postBuildPlan() ([]string, [][]string, bool) {
+	if w == nil || w.config == nil {
+		return nil, nil, false
+	}
+	order := normalizeStepList(w.config.PostBuild.Order)
+	if len(order) == 0 {
+		return nil, nil, false
+	}
+	parallelGroups := make([][]string, 0, len(w.config.PostBuild.ParallelGroups))
+	for _, group := range w.config.PostBuild.ParallelGroups {
+		steps := normalizeStepList(group)
+		if len(steps) >= 2 {
+			parallelGroups = append(parallelGroups, steps)
+		}
+	}
+	return order, parallelGroups, true
+}
+
+func normalizeStepList(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]struct{}{}
+	for _, raw := range in {
+		step := strings.TrimSpace(raw)
+		if step == "" {
+			continue
+		}
+		if _, ok := seen[step]; ok {
+			continue
+		}
+		seen[step] = struct{}{}
+		out = append(out, step)
+	}
+	return out
+}
+
+func (w *Watchdog) collectBuildFeatureStatus(order []string) map[string]*buildFeatureStatus {
+	stepSet := make(map[string]struct{}, len(order))
+	for _, step := range order {
+		stepSet[step] = struct{}{}
+	}
+
+	features := map[string]*buildFeatureStatus{}
+	for id, tk := range w.tracker.Tickets {
+		if feature, ok := buildFeatureFromTicket(id, tk, stepSet); ok {
+			fs := features[feature]
+			if fs == nil {
+				fs = &buildFeatureStatus{PostBuildStepsSet: map[string]bool{}}
+				features[feature] = fs
+			}
+			fs.BuildTotal++
+			if tk.Status == tracker.StatusDone {
+				fs.BuildDone++
+			}
+			fs.BuildIDs = append(fs.BuildIDs, id)
+			if tk.Phase > fs.MaxBuildPhase {
+				fs.MaxBuildPhase = tk.Phase
+			}
+			continue
+		}
+		if step, feature, ok := postBuildStepFromTicket(id, tk, stepSet); ok {
+			fs := features[feature]
+			if fs == nil {
+				fs = &buildFeatureStatus{PostBuildStepsSet: map[string]bool{}}
+				features[feature] = fs
+			}
+			fs.PostBuildStepsSet[step] = true
+		}
+	}
+
+	for _, fs := range features {
+		sort.Strings(fs.BuildIDs)
+	}
+	return features
+}
+
+func buildFeatureFromTicket(id string, tk tracker.Ticket, postBuildSteps map[string]struct{}) (string, bool) {
+	ticketType := strings.TrimSpace(tk.Type)
+	if ticketType != "" {
+		if _, isPostBuild := postBuildSteps[ticketType]; isPostBuild {
+			return "", false
+		}
+		if ticketType == "build" {
+			feature := strings.TrimSpace(tk.Feature)
+			if feature == "" {
+				feature, _ = parseBuildID(id)
+			}
+			if feature != "" {
+				return feature, true
+			}
+		}
+		return "", false
+	}
+	feature, ok := parseBuildID(id)
+	if !ok || feature == "" {
+		return "", false
+	}
+	return feature, true
+}
+
+func parseBuildID(id string) (string, bool) {
+	id = strings.TrimSpace(id)
+	i := strings.LastIndex(id, "-")
+	if i <= 0 || i+1 >= len(id) {
+		return "", false
+	}
+	feature := strings.TrimSpace(id[:i])
+	suffix := strings.TrimSpace(id[i+1:])
+	if feature == "" || suffix == "" {
+		return "", false
+	}
+	if _, err := strconv.Atoi(suffix); err != nil {
+		return "", false
+	}
+	return feature, true
+}
+
+func postBuildStepFromTicket(id string, tk tracker.Ticket, stepSet map[string]struct{}) (step, feature string, ok bool) {
+	ticketType := strings.TrimSpace(tk.Type)
+	feature = strings.TrimSpace(tk.Feature)
+	if ticketType != "" {
+		if _, isStep := stepSet[ticketType]; isStep && feature != "" {
+			return ticketType, feature, true
+		}
+	}
+	i := strings.Index(id, "-")
+	if i <= 0 || i+1 >= len(id) {
+		return "", "", false
+	}
+	step = strings.TrimSpace(id[:i])
+	feature = strings.TrimSpace(id[i+1:])
+	if step == "" || feature == "" {
+		return "", "", false
+	}
+	if _, isStep := stepSet[step]; !isStep {
+		return "", "", false
+	}
+	return step, feature, true
+}
+
+func (w *Watchdog) createPostBuildTicketsForFeature(
+	feature string,
+	fs *buildFeatureStatus,
+	order []string,
+	parallelGroups [][]string,
+) int {
+	if fs == nil {
+		return 0
+	}
+	phase := fs.MaxBuildPhase
+	if phase <= 0 {
+		phase = 1
+	}
+
+	stages := buildPostBuildStages(order, parallelGroups)
+	if len(stages) == 0 {
+		return 0
+	}
+
+	created := 0
+	prevStageIDs := append([]string(nil), fs.BuildIDs...)
+	sort.Strings(prevStageIDs)
+
+	for _, stage := range stages {
+		nextStageIDs := make([]string, 0, len(stage))
+		for _, step := range stage {
+			id := step + "-" + feature
+			nextStageIDs = append(nextStageIDs, id)
+			if _, exists := w.tracker.Tickets[id]; exists {
+				fs.PostBuildStepsSet[step] = true
+				continue
+			}
+			tk := tracker.Ticket{
+				Status:  tracker.StatusTodo,
+				Phase:   phase,
+				Depends: append([]string(nil), prevStageIDs...),
+				Type:    step,
+				Feature: feature,
+				Branch:  "feat/" + id,
+				Desc:    postBuildDescription(step, feature),
+				Profile: postBuildProfile(step),
+			}
+			if len(tk.Depends) == 0 {
+				tk.Depends = []string{}
+			}
+			w.tracker.Tickets[id] = tk
+			fs.PostBuildStepsSet[step] = true
+			created++
+		}
+		sort.Strings(nextStageIDs)
+		prevStageIDs = nextStageIDs
+	}
+	return created
+}
+
+func buildPostBuildStages(order []string, parallelGroups [][]string) [][]string {
+	order = normalizeStepList(order)
+	if len(order) == 0 {
+		return nil
+	}
+	n := len(order)
+	indexByStep := make(map[string]int, n)
+	for i, step := range order {
+		indexByStep[step] = i
+	}
+
+	parent := make([]int, n)
+	for i := range parent {
+		parent[i] = i
+	}
+	grouped := make([]bool, n)
+	var find func(int) int
+	find = func(x int) int {
+		if parent[x] != x {
+			parent[x] = find(parent[x])
+		}
+		return parent[x]
+	}
+	union := func(a, b int) {
+		ra := find(a)
+		rb := find(b)
+		if ra == rb {
+			return
+		}
+		if ra < rb {
+			parent[rb] = ra
+		} else {
+			parent[ra] = rb
+		}
+	}
+
+	for _, group := range parallelGroups {
+		steps := normalizeStepList(group)
+		if len(steps) < 2 {
+			continue
+		}
+		indices := make([]int, 0, len(steps))
+		for _, step := range steps {
+			if idx, ok := indexByStep[step]; ok {
+				indices = append(indices, idx)
+			}
+		}
+		if len(indices) < 2 {
+			continue
+		}
+		sort.Ints(indices)
+		contiguous := true
+		for i := 1; i < len(indices); i++ {
+			if indices[i] != indices[i-1]+1 {
+				contiguous = false
+				break
+			}
+		}
+		if !contiguous {
+			continue
+		}
+		overlaps := false
+		for _, idx := range indices {
+			if grouped[idx] {
+				overlaps = true
+				break
+			}
+		}
+		if overlaps {
+			continue
+		}
+		base := indices[0]
+		for _, idx := range indices[1:] {
+			union(base, idx)
+		}
+		for _, idx := range indices {
+			grouped[idx] = true
+		}
+	}
+
+	stageMap := map[int][]int{}
+	for i := 0; i < n; i++ {
+		root := find(i)
+		stageMap[root] = append(stageMap[root], i)
+	}
+
+	roots := make([]int, 0, len(stageMap))
+	for root := range stageMap {
+		roots = append(roots, root)
+	}
+	sort.Ints(roots)
+
+	stages := make([][]string, 0, len(roots))
+	for _, root := range roots {
+		indices := stageMap[root]
+		sort.Ints(indices)
+		stage := make([]string, 0, len(indices))
+		for _, idx := range indices {
+			stage = append(stage, order[idx])
+		}
+		stages = append(stages, stage)
+	}
+	return stages
+}
+
+func postBuildProfile(step string) string {
+	switch strings.TrimSpace(step) {
+	case "gap", "review", "mem":
+		return "code-reviewer"
+	case "tst":
+		return "e2e-runner"
+	case "sec":
+		return "security-reviewer"
+	case "doc":
+		return "doc-updater"
+	case "clean":
+		return "refactor-cleaner"
+	default:
+		return ""
+	}
+}
+
+func postBuildDescription(step, feature string) string {
+	switch strings.TrimSpace(step) {
+	case "int":
+		return fmt.Sprintf("Integration merge for %s", feature)
+	case "gap":
+		return fmt.Sprintf("Gap assessment for %s", feature)
+	case "tst":
+		return fmt.Sprintf("E2E + build verification for %s", feature)
+	case "review":
+		return fmt.Sprintf("Code review for %s", feature)
+	case "sec":
+		return fmt.Sprintf("Security review for %s", feature)
+	case "doc":
+		return fmt.Sprintf("Documentation update for %s", feature)
+	case "clean":
+		return fmt.Sprintf("Refactor/cleanup for %s", feature)
+	case "mem":
+		return fmt.Sprintf("Lessons learned for %s", feature)
+	default:
+		return fmt.Sprintf("Post-build %s for %s", step, feature)
+	}
 }

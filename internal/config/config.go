@@ -17,18 +17,21 @@ type Config struct {
 	Integration   IntegrationConfig   `toml:"integration"`
 	Serve         ServeConfig         `toml:"serve"`
 	Install       InstallConfig       `toml:"install"`
+	Profiles      ProfilesConfig      `toml:"profiles"`
+	PostBuild     PostBuildConfig     `toml:"post_build"`
 }
 
 type ProjectConfig struct {
-	Name       string `toml:"name"`
-	Repo       string `toml:"repo"`
-	BaseBranch string `toml:"base_branch"`
-	MaxAgents  int    `toml:"max_agents"`
-	MinRAMMB   int    `toml:"min_ram_mb"`
-	PromptDir  string `toml:"prompt_dir"`
-	Tracker     string `toml:"tracker"`
-	AutoApprove bool   `toml:"auto_approve"`
+	Name           string `toml:"name"`
+	Repo           string `toml:"repo"`
+	BaseBranch     string `toml:"base_branch"`
+	MaxAgents      int    `toml:"max_agents"`
+	MinRAMMB       int    `toml:"min_ram_mb"`
+	PromptDir      string `toml:"prompt_dir"`
+	Tracker        string `toml:"tracker"`
+	AutoApprove    bool   `toml:"auto_approve"`
 	SpecFile       string `toml:"spec_file"`
+	FeaturesDir    string `toml:"features_dir"`
 	DefaultProfile string `toml:"default_profile"`
 }
 
@@ -41,8 +44,8 @@ type BackendConfig struct {
 }
 
 type NotificationsConfig struct {
-	Type           string `toml:"type"`
-	TelegramChatID string `toml:"telegram_chat_id"`
+	Type             string `toml:"type"`
+	TelegramChatID   string `toml:"telegram_chat_id"`
 	TelegramToken    string `toml:"telegram_token"`
 	TelegramTokenCmd string `toml:"telegram_token_cmd"`
 }
@@ -52,6 +55,11 @@ type WatchdogConfig struct {
 	MaxRuntime   string `toml:"max_runtime"`
 	StaleTimeout string `toml:"stale_timeout"`
 	MaxRetries   int    `toml:"max_retries"`
+}
+
+type PostBuildConfig struct {
+	Order          []string   `toml:"order"`
+	ParallelGroups [][]string `toml:"parallel_groups"`
 }
 
 type IntegrationConfig struct {
@@ -71,16 +79,29 @@ type InstallConfig struct {
 	RunMode  string `toml:"run_mode"`
 }
 
+type ProfilesConfig struct {
+	Architect          string `toml:"architect"`
+	CodeAgent          string `toml:"code_agent"`
+	TDDGuide           string `toml:"tdd_guide"`
+	CodeReviewer       string `toml:"code_reviewer"`
+	SecurityReviewer   string `toml:"security_reviewer"`
+	E2ERunner          string `toml:"e2e_runner"`
+	DocUpdater         string `toml:"doc_updater"`
+	RefactorCleaner    string `toml:"refactor_cleaner"`
+	BuildErrorResolver string `toml:"build_error_resolver"`
+}
+
 func Default() *Config {
 	return &Config{
 		Project: ProjectConfig{
-			Name:       "myproject",
-			Repo:       ".",
-			BaseBranch: "main",
-			MaxAgents:  7,
-			MinRAMMB:   1024,
-			PromptDir:  "swarm/prompts",
-			Tracker:    "swarm/tracker.json",
+			Name:        "myproject",
+			Repo:        ".",
+			BaseBranch:  "main",
+			MaxAgents:   7,
+			MinRAMMB:    1024,
+			PromptDir:   "swarm/prompts",
+			Tracker:     "swarm/tracker.json",
+			FeaturesDir: "swarm/features",
 		},
 		Backend: BackendConfig{
 			Type:          "codex-tmux",
@@ -113,6 +134,21 @@ func Default() *Config {
 			Method:   "",
 			Interval: "5m",
 			RunMode:  "timer",
+		},
+		Profiles: ProfilesConfig{
+			Architect:          ".agents/profiles/architect.md",
+			CodeAgent:          ".agents/profiles/code-agent.md",
+			TDDGuide:           ".agents/profiles/tdd-guide.md",
+			CodeReviewer:       ".agents/profiles/code-reviewer.md",
+			SecurityReviewer:   ".agents/profiles/security-reviewer.md",
+			E2ERunner:          ".agents/profiles/e2e-runner.md",
+			DocUpdater:         ".agents/profiles/doc-updater.md",
+			RefactorCleaner:    ".agents/profiles/refactor-cleaner.md",
+			BuildErrorResolver: ".agents/profiles/build-error-resolver.md",
+		},
+		PostBuild: PostBuildConfig{
+			Order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			ParallelGroups: [][]string{{"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}},
 		},
 	}
 }
@@ -170,6 +206,9 @@ func validate(cfg *Config) error {
 	}
 	if strings.TrimSpace(cfg.Project.Tracker) == "" {
 		return fmt.Errorf("project.tracker is required")
+	}
+	if strings.TrimSpace(cfg.Project.FeaturesDir) == "" {
+		return fmt.Errorf("project.features_dir is required")
 	}
 	if cfg.Project.MaxAgents <= 0 {
 		return fmt.Errorf("project.max_agents must be > 0")

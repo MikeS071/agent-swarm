@@ -7,7 +7,6 @@ import (
 )
 
 func TestAvailableRAMFromMeminfo(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	p := filepath.Join(dir, "meminfo")
 	contents := "MemTotal:       16384256 kB\nMemAvailable:    2097152 kB\n"
@@ -29,7 +28,6 @@ func TestAvailableRAMFromMeminfo(t *testing.T) {
 }
 
 func TestCanSpawn(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	p := filepath.Join(dir, "meminfo")
 	contents := "MemAvailable:    1048576 kB\n"
@@ -50,7 +48,6 @@ func TestCanSpawn(t *testing.T) {
 }
 
 func TestAvailableRAMMissingMeminfoFails(t *testing.T) {
-	t.Parallel()
 	old := procMeminfoPath
 	procMeminfoPath = "/no/such/file"
 	t.Cleanup(func() { procMeminfoPath = old })

@@ -4,17 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
-	"io/fs"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/MikeS071/agent-swarm/internal/backend"
-	"github.com/MikeS071/agent-swarm/internal/dispatcher"
 	"github.com/MikeS071/agent-swarm/internal/config"
+	"github.com/MikeS071/agent-swarm/internal/dispatcher"
 	"github.com/MikeS071/agent-swarm/internal/progress"
 	"github.com/MikeS071/agent-swarm/internal/sysinfo"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
@@ -48,16 +48,18 @@ type ticketRow struct {
 type tickMsg time.Time
 
 type model struct {
-	tracker  *tracker.Tracker
-	config   *config.Config
-	backend  backend.AgentBackend
-	tickets  []ticketRow
-	cursor   int
-	viewMode string // "list" | "detail"
-	detailID string
-	compact  bool
-	width    int
-	height   int
+	tracker        *tracker.Tracker
+	config         *config.Config
+	backend        backend.AgentBackend
+	backendFactory func(backendType string) (backend.AgentBackend, error)
+	backendCache   map[string]backend.AgentBackend
+	tickets        []ticketRow
+	cursor         int
+	viewMode       string // "list" | "detail"
+	detailID       string
+	compact        bool
+	width          int
+	height         int
 
 	projects     []projectContext
 	projectIndex int
@@ -101,15 +103,17 @@ func Run(configPath string, projectName string, compact bool) error {
 	}
 
 	m := model{
-		tracker:      tr,
-		config:       cfg,
-		backend:      newBackend(cfg),
-		viewMode:     "list",
-		compact:      compact,
-		pageSize:     20,
-		projects:     projects,
-		projectIndex: idx,
+		tracker:        tr,
+		config:         cfg,
+		backend:        newBackend(cfg),
+		backendFactory: newBackendFactory(cfg),
+		viewMode:       "list",
+		compact:        compact,
+		pageSize:       20,
+		projects:       projects,
+		projectIndex:   idx,
 	}
+	m.resetBackendCache()
 	m.rebuildRows()
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -122,7 +126,9 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.pageSize == 0 { m.pageSize = 20 }
+	if m.pageSize == 0 {
+		m.pageSize = 20
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -226,6 +232,8 @@ func (m *model) refresh() {
 	m.config = cfg
 	m.tracker = tr
 	m.backend = newBackend(cfg)
+	m.backendFactory = newBackendFactory(cfg)
+	m.resetBackendCache()
 	m.rebuildRows()
 	if m.viewMode == "detail" {
 		m.refreshDetailOutput()
@@ -237,11 +245,21 @@ func (m *model) refreshDetailOutput() {
 		m.detailOutput = ""
 		return
 	}
-	if m.backend == nil {
+	if m.tracker == nil {
+		m.detailOutput = "tracker unavailable"
+		return
+	}
+	tk, ok := m.tracker.Get(m.detailID)
+	if !ok {
+		m.detailOutput = "ticket not found"
+		return
+	}
+	be := m.backendForTicket(m.detailID, tk)
+	if be == nil {
 		m.detailOutput = "backend unavailable"
 		return
 	}
-	out, err := m.backend.GetOutput(backend.AgentHandle{SessionName: m.sessionName(m.detailID)}, 50)
+	out, err := be.GetOutput(m.sessionHandleForTicket(m.detailID, tk), 50)
 	if err != nil {
 		m.detailOutput = fmt.Sprintf("unable to load output: %v", err)
 		return
@@ -274,8 +292,9 @@ func (m *model) rebuildRows() {
 		}
 
 		if tk.Status == "running" {
-			h := backend.AgentHandle{SessionName: m.sessionName(id), StartedAt: time.Now().Add(-30 * time.Second)}
-			pg := progress.GetProgress(h, m.backend, 0)
+			be := m.backendForTicket(id, tk)
+			h := m.sessionHandleForTicket(id, tk)
+			pg := progress.GetProgress(h, be, 0)
 			row.Progress = pg.Progress
 			row.Done = pg.TasksDone
 			row.Total = pg.TasksTotal
@@ -581,10 +600,36 @@ func loadProject(p projectContext) (*config.Config, *tracker.Tracker, error) {
 }
 
 func newBackend(cfg *config.Config) backend.AgentBackend {
-	if cfg != nil && cfg.Backend.Type == "codex-tmux" {
-		return backend.NewCodexBackend(cfg.Backend.Binary, cfg.Backend.BypassSandbox)
+	if cfg == nil {
+		return &noopBackend{}
 	}
-	return &noopBackend{}
+	b, err := backend.Build(cfg.Backend.Type, backend.BuildOptions{
+		Binary:        cfg.Backend.Binary,
+		BypassSandbox: cfg.Backend.BypassSandbox,
+	})
+	if err != nil {
+		return &noopBackend{}
+	}
+	return b
+}
+
+func newBackendFactory(cfg *config.Config) func(string) (backend.AgentBackend, error) {
+	return func(backendType string) (backend.AgentBackend, error) {
+		if cfg == nil {
+			return backend.Build(backendType, backend.BuildOptions{})
+		}
+		return backend.Build(backendType, backend.BuildOptions{
+			Binary:        cfg.Backend.Binary,
+			BypassSandbox: cfg.Backend.BypassSandbox,
+		})
+	}
+}
+
+func (m *model) resetBackendCache() {
+	m.backendCache = map[string]backend.AgentBackend{}
+	if m.backend != nil {
+		m.backendCache[m.defaultBackendType()] = m.backend
+	}
 }
 
 func (m *model) toggleAutoApprove() {
@@ -660,19 +705,29 @@ func (m *model) approveGate() {
 		if pdata, rerr := os.ReadFile(promptSrc); rerr == nil {
 			_ = os.WriteFile(filepath.Join(worktreeDir, ".codex-prompt.md"), pdata, 0644)
 		}
-		_, err := m.backend.Spawn(context.Background(), backend.SpawnConfig{
+		be := m.backendForTicket(tid, tk)
+		handle, err := be.Spawn(context.Background(), backend.SpawnConfig{
 			TicketID:    tid,
 			Branch:      tk.Branch,
 			WorkDir:     worktreeDir,
 			PromptFile:  filepath.Join(worktreeDir, ".codex-prompt.md"),
-			Model:       m.config.Backend.Model,
+			Model:       m.modelForTicket(tk),
 			Effort:      m.config.Backend.Effort,
 			ProjectName: m.config.Project.Name,
 		})
 		if err != nil {
 			continue
 		}
-		_ = m.tracker.SetStatus(tid, "running")
+		updated := tk
+		updated.Status = tracker.StatusRunning
+		updated.StartedAt = time.Now().UTC().Format(time.RFC3339)
+		updated.SessionName = strings.TrimSpace(handle.SessionName)
+		if updated.SessionName == "" {
+			updated.SessionName = m.sessionName(tid)
+		}
+		updated.SessionBackend = m.backendTypeForTicket(tk)
+		updated.SessionModel = m.modelForTicket(tk)
+		m.tracker.Tickets[tid] = updated
 		spawned++
 	}
 	_ = m.tracker.SaveTo(proj.trackerPath)
@@ -698,16 +753,94 @@ func (m *model) sessionName(ticketID string) string {
 	return "swarm-" + ticketID
 }
 
+func (m *model) defaultBackendType() string {
+	if m == nil || m.config == nil {
+		return backend.TypeCodexTmux
+	}
+	return normalizeBackendType(m.config.Backend.Type)
+}
+
+func normalizeBackendType(v string) string {
+	n := strings.ToLower(strings.TrimSpace(v))
+	if n == "" {
+		return backend.TypeCodexTmux
+	}
+	return n
+}
+
+func (m *model) backendTypeForTicket(tk tracker.Ticket) string {
+	if bt := strings.TrimSpace(tk.SessionBackend); bt != "" {
+		return normalizeBackendType(bt)
+	}
+	return m.defaultBackendType()
+}
+
+func (m *model) modelForTicket(tk tracker.Ticket) string {
+	if model := strings.TrimSpace(tk.SessionModel); model != "" {
+		return model
+	}
+	if m.config == nil {
+		return ""
+	}
+	return m.config.Backend.Model
+}
+
+func (m *model) backendForType(backendType string) backend.AgentBackend {
+	bt := normalizeBackendType(backendType)
+	if m.backendCache == nil {
+		m.resetBackendCache()
+	}
+	if be, ok := m.backendCache[bt]; ok && be != nil {
+		return be
+	}
+	if bt == m.defaultBackendType() && m.backend != nil {
+		m.backendCache[bt] = m.backend
+		return m.backend
+	}
+	if m.backendFactory == nil {
+		return &noopBackend{}
+	}
+	be, err := m.backendFactory(bt)
+	if err != nil {
+		return &noopBackend{}
+	}
+	m.backendCache[bt] = be
+	return be
+}
+
+func (m *model) backendForTicket(_ string, tk tracker.Ticket) backend.AgentBackend {
+	return m.backendForType(m.backendTypeForTicket(tk))
+}
+
+func (m *model) sessionHandleForTicket(ticketID string, tk tracker.Ticket) backend.AgentHandle {
+	session := strings.TrimSpace(tk.SessionName)
+	if session == "" {
+		session = m.sessionName(ticketID)
+	}
+	h := backend.AgentHandle{SessionName: session}
+	if ts := strings.TrimSpace(tk.StartedAt); ts != "" {
+		if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+			h.StartedAt = parsed
+		}
+	}
+	return h
+}
+
 func (m *model) killSelected() {
-	if len(m.tickets) == 0 || m.backend == nil {
+	if len(m.tickets) == 0 || m.tracker == nil {
 		return
 	}
 	id := m.tickets[m.cursor].ID
-	m.lastErr = m.backend.Kill(backend.AgentHandle{SessionName: m.sessionName(id)})
+	tk, ok := m.tracker.Get(id)
+	if !ok {
+		return
+	}
+	be := m.backendForTicket(id, tk)
+	m.lastErr = be.Kill(m.sessionHandleForTicket(id, tk))
 }
 
 func (m *model) respawnSelected() {
-	if len(m.tickets) == 0 || m.backend == nil || m.tracker == nil || m.config == nil || len(m.projects) == 0 {
+	if len(m.tickets) == 0 || m.tracker == nil || m.config == nil || len(m.projects) == 0 {
 		return
 	}
 	id := m.tickets[m.cursor].ID
@@ -738,22 +871,29 @@ func (m *model) respawnSelected() {
 		_ = os.WriteFile(filepath.Join(worktreeDir, ".codex-prompt.md"), pdata, 0644)
 	}
 
-	_, err := m.backend.Spawn(context.Background(), backend.SpawnConfig{
-		TicketID:   id,
-		Branch:     tk.Branch,
-		WorkDir:    worktreeDir,
-		PromptFile: filepath.Join(worktreeDir, ".codex-prompt.md"),
-		Model:      m.config.Backend.Model,
-		Effort:     m.config.Backend.Effort,
+	be := m.backendForTicket(id, tk)
+	handle, err := be.Spawn(context.Background(), backend.SpawnConfig{
+		TicketID:    id,
+		Branch:      tk.Branch,
+		WorkDir:     worktreeDir,
+		PromptFile:  filepath.Join(worktreeDir, ".codex-prompt.md"),
+		Model:       m.modelForTicket(tk),
+		Effort:      m.config.Backend.Effort,
+		ProjectName: m.config.Project.Name,
 	})
 	if err != nil {
 		m.lastErr = err
 		return
 	}
-	if err := m.tracker.SetStatus(id, "running"); err != nil {
-		m.lastErr = err
-		return
+	tk.Status = tracker.StatusRunning
+	tk.StartedAt = time.Now().UTC().Format(time.RFC3339)
+	tk.SessionName = strings.TrimSpace(handle.SessionName)
+	if tk.SessionName == "" {
+		tk.SessionName = m.sessionName(id)
 	}
+	tk.SessionBackend = m.backendTypeForTicket(tk)
+	tk.SessionModel = m.modelForTicket(tk)
+	m.tracker.Tickets[id] = tk
 	if err := m.tracker.SaveTo(proj.trackerPath); err != nil {
 		m.lastErr = err
 	}
@@ -785,7 +925,6 @@ func (n *noopBackend) GetOutput(backend.AgentHandle, int) (string, error) {
 }
 func (n *noopBackend) Kill(backend.AgentHandle) error { return fmt.Errorf("backend not configured") }
 func (n *noopBackend) Name() string                   { return "noop" }
-
 
 func (m *model) archiveDone() {
 	if m.tracker == nil || len(m.projects) == 0 {

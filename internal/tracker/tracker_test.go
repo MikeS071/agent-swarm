@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -142,5 +143,148 @@ func TestLoadFromFixture(t *testing.T) {
 	}
 	if tr.Project != "x" {
 		t.Fatalf("project=%q want x", tr.Project)
+	}
+}
+
+func TestLoadSupportsLegacyAndExtendedTicketSchema(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		contents    string
+		wantType    string
+		wantFeature string
+		wantProfile string
+	}{
+		{
+			name:        "legacy schema without optional fields",
+			contents:    `{"project":"x","tickets":{"t1":{"status":"todo","phase":1,"depends":[]}}}`,
+			wantType:    "",
+			wantFeature: "",
+			wantProfile: "",
+		},
+		{
+			name:        "extended schema with all optional fields",
+			contents:    `{"project":"x","tickets":{"t1":{"status":"todo","phase":1,"depends":[],"type":"review","feature":"cache-overhaul","profile":"code-reviewer"}}}`,
+			wantType:    "review",
+			wantFeature: "cache-overhaul",
+			wantProfile: "code-reviewer",
+		},
+		{
+			name:        "extended schema with partial optional fields",
+			contents:    `{"project":"x","tickets":{"t1":{"status":"todo","phase":1,"depends":[],"feature":"cache-overhaul"}}}`,
+			wantType:    "",
+			wantFeature: "cache-overhaul",
+			wantProfile: "",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := writeTrackerFile(t, tc.contents)
+			tr, err := Load(path)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+
+			tk, ok := tr.Tickets["t1"]
+			if !ok {
+				t.Fatal("missing t1")
+			}
+			if tk.Type != tc.wantType {
+				t.Fatalf("type=%q want %q", tk.Type, tc.wantType)
+			}
+			if tk.Feature != tc.wantFeature {
+				t.Fatalf("feature=%q want %q", tk.Feature, tc.wantFeature)
+			}
+			if tk.Profile != tc.wantProfile {
+				t.Fatalf("profile=%q want %q", tk.Profile, tc.wantProfile)
+			}
+		})
+	}
+}
+
+func TestSaveToIncludesExtendedTicketSchemaFields(t *testing.T) {
+	t.Parallel()
+
+	tr := &Tracker{
+		Project: "x",
+		Tickets: map[string]Ticket{
+			"t1": {
+				Status:  "todo",
+				Phase:   1,
+				Depends: []string{},
+				Type:    "review",
+				Feature: "cache-overhaul",
+				Profile: "code-reviewer",
+			},
+		},
+	}
+	path := filepath.Join(t.TempDir(), "tracker.json")
+	if err := tr.SaveTo(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	var raw struct {
+		Tickets map[string]map[string]any `json:"tickets"`
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	t1 := raw.Tickets["t1"]
+	if t1["type"] != "review" {
+		t.Fatalf("type=%v want review", t1["type"])
+	}
+	if t1["feature"] != "cache-overhaul" {
+		t.Fatalf("feature=%v want cache-overhaul", t1["feature"])
+	}
+	if t1["profile"] != "code-reviewer" {
+		t.Fatalf("profile=%v want code-reviewer", t1["profile"])
+	}
+}
+
+func TestSaveToOmitsEmptyExtendedTicketSchemaFields(t *testing.T) {
+	t.Parallel()
+
+	tr := &Tracker{
+		Project: "x",
+		Tickets: map[string]Ticket{
+			"t1": {
+				Status:  "todo",
+				Phase:   1,
+				Depends: []string{},
+			},
+		},
+	}
+	path := filepath.Join(t.TempDir(), "tracker.json")
+	if err := tr.SaveTo(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	var raw struct {
+		Tickets map[string]map[string]any `json:"tickets"`
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	t1 := raw.Tickets["t1"]
+	if _, ok := t1["type"]; ok {
+		t.Fatalf("expected type to be omitted, got %v", t1["type"])
+	}
+	if _, ok := t1["feature"]; ok {
+		t.Fatalf("expected feature to be omitted, got %v", t1["feature"])
+	}
+	if _, ok := t1["profile"]; ok {
+		t.Fatalf("expected profile to be omitted, got %v", t1["profile"])
 	}
 }
