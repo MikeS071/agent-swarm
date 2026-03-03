@@ -14,7 +14,6 @@ type Config struct {
 	Backend       BackendConfig       `toml:"backend"`
 	Notifications NotificationsConfig `toml:"notifications"`
 	Watchdog      WatchdogConfig      `toml:"watchdog"`
-	PostBuild     PostBuildConfig     `toml:"post_build"`
 	Integration   IntegrationConfig   `toml:"integration"`
 	Serve         ServeConfig         `toml:"serve"`
 	Install       InstallConfig       `toml:"install"`
@@ -90,11 +89,6 @@ type ProfilesConfig struct {
 	DocUpdater         string `toml:"doc_updater"`
 	RefactorCleaner    string `toml:"refactor_cleaner"`
 	BuildErrorResolver string `toml:"build_error_resolver"`
-}
-
-type PostBuildConfig struct {
-	Order          []string   `toml:"order"`
-	ParallelGroups [][]string `toml:"parallel_groups"`
 }
 
 func Default() *Config {
