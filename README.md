@@ -10,6 +10,13 @@ Go CLI for orchestrating parallel coding agents across isolated git worktrees wi
 go install github.com/MikeS071/agent-swarm@latest
 ```
 
+## v2 Highlights
+
+- Scaffold includes governance + agent assets: `AGENTS.md`, `.agents/skills/`, `.agents/profiles/`, `.codex/rules/`, and `swarm/features/`.
+- Phase-sequential dispatcher with explicit phase-gate approval (`swarm go` or TUI `A`) and optional `auto_approve` mode.
+- Layered prompt assembly at spawn time: `AGENTS.md` -> `spec_file` -> profile -> ticket prompt -> `swarm/prompt-footer.md`.
+- Operational tools for integration, archiving, live TUI monitoring, HTTP API, and scheduler installation.
+
 ## Quick Start
 
 ```bash
@@ -21,13 +28,14 @@ cd myproject
 swarm add-ticket sw-01 --phase 1 --desc "implement tracker"
 swarm add-ticket sw-02 --phase 1 --deps sw-01 --desc "status output"
 
-# 3) Validate prompts and generate missing templates
+# 3) Create or generate prompts
 swarm prompts check
 swarm prompts gen sw-01
 
-# 4) Inspect project status
+# 4) Monitor status
 swarm status
 swarm status --json
+swarm status --watch
 
 # 5) Run watchdog loop (or one pass)
 swarm watch
@@ -39,43 +47,54 @@ swarm watch --once
 
 ```text
 swarm init <project>
-  Scaffold project files: swarm.toml, swarm/tracker.json, swarm/prompts/
+  Scaffold swarm.toml, swarm/tracker.json, swarm/prompts/, swarm/features/, swarm/logs/, and embedded assets
 
-swarm status [--project NAME] [--json] [--watch] [--compact]
-  Show tracker status as table, JSON, compact list, or live TUI
-
-swarm add-ticket <id> [--deps a,b] --phase N --desc "..."
-  Add a ticket to tracker
+swarm add-ticket <id> [--deps a,b] [--phase N] [--desc "..."]
+  Add ticket metadata to tracker
 
 swarm prompts check
-  Report todo tickets missing prompt files
+  Report todo tickets missing prompts
 
 swarm prompts gen <ticket>
   Generate prompt template for a ticket
 
-swarm cleanup [--older-than 24h]
-  Remove stale worktrees older than the provided duration
+swarm status [--project NAME] [--json] [--compact] [--watch] [--live]
+  Show tracker status table/JSON/compact, run Bubble Tea TUI, or 1s live terminal view
 
 swarm watch [--interval 5m] [--once] [--dry-run]
-  Run watchdog daemon or a single watchdog pass
+  Run watchdog daemon or a single pass
 
-swarm serve [--port 8090] [--cors ORIGIN] [--auth-token TOKEN]
-  Run HTTP API server
-
-swarm install [--user] [--interval 5m] [--uninstall]
-  Install/uninstall scheduled watchdog execution (systemd/launchd/cron)
+swarm go
+  Approve the current phase gate
 
 swarm integrate [--base main] [--branch integration/v1] [--dry-run] [--continue]
-  Merge done ticket branches in dependency order
-swarm archive [--phase N] [--dry-run]
-  Archive done tickets to swarm/archive.json
+  Merge done ticket branches in dependency order onto integration branch
 
-swarm archive restore
-  Restore all archived tickets back to tracker
+swarm archive [--phase N] [--dry-run] [--restore]
+  Archive done tickets to swarm/archive.json or restore archived tickets
 
-swarm archive list
-  Show archived tickets
+swarm cleanup [--older-than 24h]
+  Remove stale worktrees
+
+swarm serve [--port 8090] [--cors ORIGIN] [--auth-token TOKEN]
+  Run HTTP API + SSE server
+
+swarm install [--user] [--interval 5m] [--uninstall]
+  Install/uninstall scheduled swarm watch execution (systemd/launchd/cron)
 ```
+
+Global flag: `--config swarm.toml` (path to config file).
+
+## Operational Workflow (v2)
+
+1. `swarm init <project>` to scaffold project + agent assets.
+2. Add tickets with `swarm add-ticket` and dependencies/phases.
+3. Create prompts manually or with `swarm prompts gen`.
+4. Start orchestration with `swarm watch`.
+5. Review phase completion via `swarm status` / `swarm status --watch`.
+6. Approve gates with `swarm go` (CLI) or `A` (TUI), unless `project.auto_approve = true`.
+7. Merge completed work with `swarm integrate`.
+8. Archive completed tickets with `swarm archive`.
 
 ## Configuration (`swarm.toml`)
 
@@ -90,6 +109,9 @@ max_agents = 7
 min_ram_mb = 1024
 prompt_dir = "swarm/prompts"
 tracker = "swarm/tracker.json"
+auto_approve = false
+spec_file = ""
+default_profile = ""
 
 [backend]
 type = "codex-tmux"
@@ -101,14 +123,14 @@ bypass_sandbox = true
 [notifications]
 type = "stdout"
 telegram_chat_id = ""
-telegram_token_cmd = "pass show apis/telegram-bot-token"  # shell command for token
+telegram_token = ""
+telegram_token_cmd = ""
 
 [watchdog]
 interval = "5m"
 max_runtime = "45m"
 stale_timeout = "10m"
 max_retries = 2
-auto_approve = false  # toggle at runtime with "m" in TUI; takes effect immediately
 
 [integration]
 verify_cmd = ""
@@ -125,32 +147,23 @@ interval = "5m"
 run_mode = "timer"
 ```
 
+## TUI (`swarm status --watch`)
 
-## TUI (`status --watch`)
-
-Interactive terminal dashboard showing all discovered projects.
-
-### Keybindings
+Interactive multi-project dashboard with live ticket controls.
 
 | Key | Action |
 |-----|--------|
 | `q` | Quit |
-| `Enter` | View agent output for selected ticket |
+| `Enter` | View selected ticket output |
 | `Esc` | Back to list |
 | `↑/↓` | Navigate tickets |
 | `k` | Kill selected agent |
 | `r` | Respawn selected ticket |
-| `A` | Approve phase gate (advance to next phase) |
-| `m` | Toggle auto/manual mode (persists to swarm.toml) |
+| `A` | Approve phase gate |
+| `m` | Toggle auto/manual mode (persists to `swarm.toml`) |
+| `p` | Cycle projects |
 | `[` / `]` | Previous / next page |
-| `p` | Cycle through projects |
-| `Tab` | Toggle compact view |
-
-Title bar shows `[auto]` or `[manual]` to indicate current mode. In auto mode, phases advance without manual approval. In manual mode, all phase tickets must complete before pressing `A` to advance.
-
-### Multi-project discovery
-
-The TUI auto-discovers projects by scanning for `swarm.toml` files (depth 3, skips worktrees/node_modules/vendor). Projects are deduplicated by name.
+| `Tab` | Toggle compact mode |
 
 ## Architecture
 
@@ -158,9 +171,9 @@ The TUI auto-discovers projects by scanning for `swarm.toml` files (depth 3, ski
 CLI (cmd/*)
   |
   +-- config loader (internal/config)
-  +-- tracker state (internal/tracker)
-  +-- dispatcher phase/dependency logic (internal/dispatcher)
-  +-- watchdog orchestration (internal/watchdog)
+  +-- tracker state + archive (internal/tracker)
+  +-- dispatcher phase logic (internal/dispatcher)
+  +-- watchdog orchestration + event log (internal/watchdog)
   +-- backend adapter (internal/backend)
   +-- worktree manager (internal/worktree)
   +-- notifier adapters (internal/notify)
@@ -168,10 +181,12 @@ CLI (cmd/*)
   +-- HTTP API + SSE (internal/server)
 ```
 
+For lifecycle-oriented v2 design notes and planned `feature` command set, see `docs/AGENT-SWARM-V2-SPEC.md`.
+
 ## Development
 
 ```bash
-go test ./... -v -count=1
-go vet ./...
+go test ./... -count=1
 go build ./...
+go vet ./...
 ```
