@@ -511,7 +511,7 @@ Ticket schema gains optional fields:
 13. Remove legacy governance references from all projects
 14. Update AGENTS.md template
 15. Update workspace docs (AGENTS.md, SOUL.md references)
-16. Archive old workflow files (WORKFLOW_AUTO.md, sprint.json)
+16. Archive/deprecate old legacy workflow artifacts and references
 
 ---
 
