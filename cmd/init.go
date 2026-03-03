@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -112,6 +113,10 @@ func scaffoldProject(project string) error {
 	}
 	copied += n
 
+	if err := registerProjectInRegistry(projectName, root); err != nil {
+		return fmt.Errorf("register project: %w", err)
+	}
+
 	fmt.Printf("✅ Initialized %s\n", projectName)
 	fmt.Printf("   swarm.toml + tracker.json\n")
 	fmt.Printf("   %d asset files (AGENTS.md, skills, profiles, rules)\n", copied)
@@ -201,4 +206,64 @@ func copyEmbedTree(fsys embed.FS, srcDir string, destDir string) (int, error) {
 		return os.WriteFile(target, data, 0o644)
 	})
 	return count, err
+}
+
+type projectRegistryEntry struct {
+	Description string `json:"description,omitempty"`
+	Repo        string `json:"repo"`
+	Tracker     string `json:"tracker,omitempty"`
+	PromptDir   string `json:"promptDir,omitempty"`
+	SpawnScript string `json:"spawnScript,omitempty"`
+}
+
+func projectsRegistryPath() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("OPENCLAW_PROJECTS_REGISTRY")); override != "" {
+		return override, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".openclaw", "workspace", "swarm", "projects.json"), nil
+}
+
+func registerProjectInRegistry(projectName, root string) error {
+	registryPath, err := projectsRegistryPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(registryPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir registry dir: %w", err)
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve project path: %w", err)
+	}
+
+	registry := map[string]projectRegistryEntry{}
+	if b, err := os.ReadFile(registryPath); err == nil {
+		if len(strings.TrimSpace(string(b))) > 0 {
+			if err := json.Unmarshal(b, &registry); err != nil {
+				return fmt.Errorf("parse registry %s: %w", registryPath, err)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read registry %s: %w", registryPath, err)
+	}
+
+	registry[projectName] = projectRegistryEntry{
+		Description: fmt.Sprintf("%s project", projectName),
+		Repo:        absRoot,
+		Tracker:     "swarm/tracker.json",
+		PromptDir:   "swarm/prompts",
+	}
+
+	out, err := json.MarshalIndent(registry, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal registry: %w", err)
+	}
+	if err := os.WriteFile(registryPath, append(out, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write registry %s: %w", registryPath, err)
+	}
+	return nil
 }

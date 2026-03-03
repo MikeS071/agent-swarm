@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,5 +168,39 @@ func TestScaffoldProjectErrorsWhenLegacyArchivePathIsBlocked(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "archive legacy workflow files") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestScaffoldProjectRegistersProjectInOpenClawRegistry(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "my-reg-project")
+	registryPath := filepath.Join(t.TempDir(), "projects.json")
+	if err := os.Setenv("OPENCLAW_PROJECTS_REGISTRY", registryPath); err != nil {
+		t.Fatalf("set env: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("OPENCLAW_PROJECTS_REGISTRY") })
+
+	if err := scaffoldProject(root); err != nil {
+		t.Fatalf("scaffoldProject: %v", err)
+	}
+
+	b, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	var reg map[string]map[string]any
+	if err := json.Unmarshal(b, &reg); err != nil {
+		t.Fatalf("parse registry: %v", err)
+	}
+	entry, ok := reg["my-reg-project"]
+	if !ok {
+		t.Fatalf("expected my-reg-project in registry")
+	}
+	if got, _ := entry["tracker"].(string); got != "swarm/tracker.json" {
+		t.Fatalf("tracker=%q want swarm/tracker.json", got)
+	}
+	if got, _ := entry["promptDir"].(string); got != "swarm/prompts" {
+		t.Fatalf("promptDir=%q want swarm/prompts", got)
 	}
 }
