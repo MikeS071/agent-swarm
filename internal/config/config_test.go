@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -121,5 +122,111 @@ type = "stdout"
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("expected error for missing required project.name")
+	}
+}
+
+func TestLoadDefaultsNewConfigSections(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeFile(t, dir, "swarm.toml", `
+[project]
+name = "myproject"
+
+[backend]
+type = "codex-tmux"
+
+[notifications]
+type = "stdout"
+
+[watchdog]
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	def := Default()
+	if cfg.Project.FeaturesDir != def.Project.FeaturesDir {
+		t.Fatalf("expected default features_dir %q, got %q", def.Project.FeaturesDir, cfg.Project.FeaturesDir)
+	}
+	if !reflect.DeepEqual(cfg.Profiles, def.Profiles) {
+		t.Fatalf("expected default profiles config %+v, got %+v", def.Profiles, cfg.Profiles)
+	}
+	if !reflect.DeepEqual(cfg.PostBuild.Order, def.PostBuild.Order) {
+		t.Fatalf("expected default post_build.order %v, got %v", def.PostBuild.Order, cfg.PostBuild.Order)
+	}
+	if !reflect.DeepEqual(cfg.PostBuild.ParallelGroups, def.PostBuild.ParallelGroups) {
+		t.Fatalf("expected default post_build.parallel_groups %v, got %v", def.PostBuild.ParallelGroups, cfg.PostBuild.ParallelGroups)
+	}
+}
+
+func TestLoadParsesCustomProfilesAndPostBuild(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeFile(t, dir, "swarm.toml", `
+[project]
+name = "myproject"
+features_dir = "custom/features"
+
+[backend]
+type = "codex-tmux"
+
+[notifications]
+type = "stdout"
+
+[watchdog]
+
+[profiles]
+code_agent = "profiles/custom-code-agent.md"
+security_reviewer = "profiles/custom-security.md"
+
+[post_build]
+order = ["int", "review", "mem"]
+parallel_groups = [["review", "sec"]]
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Project.FeaturesDir != "custom/features" {
+		t.Fatalf("expected features_dir custom/features, got %q", cfg.Project.FeaturesDir)
+	}
+	if cfg.Profiles.CodeAgent != "profiles/custom-code-agent.md" {
+		t.Fatalf("expected profiles.code_agent override, got %q", cfg.Profiles.CodeAgent)
+	}
+	if cfg.Profiles.SecurityReviewer != "profiles/custom-security.md" {
+		t.Fatalf("expected profiles.security_reviewer override, got %q", cfg.Profiles.SecurityReviewer)
+	}
+	if !reflect.DeepEqual(cfg.PostBuild.Order, []string{"int", "review", "mem"}) {
+		t.Fatalf("expected custom post_build.order, got %v", cfg.PostBuild.Order)
+	}
+	if !reflect.DeepEqual(cfg.PostBuild.ParallelGroups, [][]string{{"review", "sec"}}) {
+		t.Fatalf("expected custom post_build.parallel_groups, got %v", cfg.PostBuild.ParallelGroups)
+	}
+}
+
+func TestLoadEmptyFeaturesDirFails(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeFile(t, dir, "swarm.toml", `
+[project]
+name = "myproject"
+features_dir = "   "
+
+[backend]
+type = "codex-tmux"
+
+[notifications]
+type = "stdout"
+
+[watchdog]
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for empty project.features_dir")
 	}
 }
