@@ -3,14 +3,6 @@
 
 ## MANDATORY DEVELOPMENT PROCESS (appended automatically — follow in exact order)
 
-### Phase 0: Decapod governance (run before any code)
-This repo uses Decapod for governance. If `decapod` is on PATH, run:
-```bash
-decapod validate && decapod session acquire && decapod rpc --op agent.init
-```
-If decapod is not installed or any command fails, **continue with the task** — do not spend time installing or debugging decapod. The test/build gates are the hard requirements.
-After completing all work, run `decapod rpc --op proof.validate` (best effort, not blocking).
-
 ### Phase 1: Understand the spec
 - Read the task objective and requirements above
 - Identify every behaviour, input, output, and error case

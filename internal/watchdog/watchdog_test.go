@@ -486,7 +486,43 @@ func TestAssemblePromptNoProfileGraceful(t *testing.T) {
 	tk := tracker.Ticket{}
 	result := string(w.assemblePrompt(tk, []byte("just the task")))
 
-	if result != "just the task" {
-		t.Errorf("expected just the ticket prompt, got: %s", result)
+	if !strings.Contains(result, "just the task") {
+		t.Errorf("expected ticket prompt in assembled output, got: %s", result)
+	}
+	if !strings.Contains(result, "## MANDATORY DEVELOPMENT PROCESS") {
+		t.Errorf("expected mandatory footer in assembled output, got: %s", result)
+	}
+	if strings.Contains(strings.ToLower(result), "decapod") {
+		t.Errorf("mandatory footer should not contain Decapod references, got: %s", result)
+	}
+}
+
+func TestAssemblePromptUsesCustomFooterWhenPresent(t *testing.T) {
+	tmp := t.TempDir()
+	os.MkdirAll(filepath.Join(tmp, "swarm", "prompts"), 0o755)
+	os.WriteFile(filepath.Join(tmp, "swarm", "prompt-footer.md"), []byte("CUSTOM FOOTER"), 0o644)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:      "test",
+			Tracker:   filepath.Join(tmp, "swarm", "tracker.json"),
+			PromptDir: filepath.Join(tmp, "swarm", "prompts"),
+		},
+	}
+
+	w := &Watchdog{config: cfg}
+	result := string(w.assemblePrompt(tracker.Ticket{}, []byte("ticket body")))
+
+	if !strings.Contains(result, "CUSTOM FOOTER") {
+		t.Fatalf("expected custom footer to be appended, got: %s", result)
+	}
+	if strings.Contains(result, "## MANDATORY DEVELOPMENT PROCESS") {
+		t.Fatalf("expected default footer to be skipped when custom footer exists, got: %s", result)
+	}
+}
+
+func TestDefaultPromptFooterHasNoDecapod(t *testing.T) {
+	if strings.Contains(strings.ToLower(defaultPromptFooter), "decapod") {
+		t.Fatalf("default prompt footer must not reference Decapod: %q", defaultPromptFooter)
 	}
 }

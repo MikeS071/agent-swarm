@@ -22,6 +22,46 @@ import (
 
 const swarmSessionPrefix = "swarm-"
 
+const defaultPromptFooter = `
+---
+
+## MANDATORY DEVELOPMENT PROCESS (appended automatically — follow in exact order)
+
+### Phase 1: Understand the spec
+- Read the task objective and requirements above
+- Identify every behaviour, input, output, and error case
+
+### Phase 2: Write tests FIRST (before any implementation code)
+- Write failing tests that define the expected behaviour from the spec
+- Min 3 test cases per function: happy path, error path, edge case
+- Table-driven tests where applicable
+- Mock external dependencies (DB, HTTP, Docker) — no real connections
+- Run tests — they SHOULD fail (red). This confirms they test real behaviour.
+
+### Phase 3: Implement
+- Write the minimum code to make all tests pass
+- Do NOT write code that isn't covered by a test
+
+### Phase 4: Quality gates (run in order, fix and re-run from gate 1 on failure)
+1. **Tests pass:** ` + "`go test ./... -count=1`" + ` (Go) or ` + "`pnpm test`" + ` (Web/TS)
+2. **Build passes:** ` + "`go build ./...`" + ` (Go) or ` + "`pnpm build`" + ` (Web/TS)
+3. **Types/Lint:** ` + "`go vet ./...`" + ` (Go) or ` + "`pnpm typecheck`" + ` (Web/TS)
+4. Iterate until all green
+
+### Phase 5: Commit (only after ALL gates pass)
+` + "```bash" + `
+git add -A
+git commit -m "feat: <description>
+
+Tests: X passed, 0 failed"
+git push origin HEAD
+` + "```" + `
+
+Do NOT exit without committing and pushing.
+Do NOT commit if any gate is failing.
+Do NOT write implementation before tests.
+`
+
 // Event is a single append-only watchdog event log entry.
 type Event struct {
 	Type      string         `json:"type"`
@@ -83,10 +123,10 @@ type Watchdog struct {
 	notifier   notify.Notifier
 	events     *EventLog
 
-	dryRun      bool
-	retries     map[string]int
-	spawnErrors map[string]int
-	stuckAlerts map[string]bool
+	dryRun         bool
+	retries        map[string]int
+	spawnErrors    map[string]int
+	stuckAlerts    map[string]bool
 	gateNoticed    bool
 	completionSent bool
 	logger         *log.Logger
@@ -477,11 +517,11 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	}
 
 	handle, err := w.backend.Spawn(ctx, backend.SpawnConfig{
-		TicketID:   ticketID,
-		Branch:     branch,
-		WorkDir:    workDir,
-		PromptFile: promptPath,
-		Model:      w.config.Backend.Model,
+		TicketID:    ticketID,
+		Branch:      branch,
+		WorkDir:     workDir,
+		PromptFile:  promptPath,
+		Model:       w.config.Backend.Model,
 		Effort:      w.config.Backend.Effort,
 		ProjectName: w.config.Project.Name,
 	})
@@ -555,12 +595,19 @@ func (w *Watchdog) assemblePrompt(tk tracker.Ticket, ticketPrompt []byte) []byte
 	parts = append(parts, ticketPrompt)
 
 	// Layer 5: footer
-	footerPath := filepath.Join(filepath.Dir(w.config.Project.PromptDir), "prompt-footer.md")
-	if data, err := os.ReadFile(footerPath); err == nil {
-		parts = append(parts, data)
-	}
+	parts = append(parts, loadPromptFooter(w.config.Project.PromptDir))
 
 	return joinParts(parts)
+}
+
+func loadPromptFooter(promptDir string) []byte {
+	footerPath := filepath.Join(filepath.Dir(promptDir), "prompt-footer.md")
+	if data, err := os.ReadFile(footerPath); err == nil {
+		if strings.TrimSpace(string(data)) != "" {
+			return data
+		}
+	}
+	return []byte(defaultPromptFooter)
 }
 
 // joinParts concatenates byte slices with double-newline separators.
@@ -579,7 +626,6 @@ func joinParts(parts [][]byte) []byte {
 	}
 	return buf
 }
-
 
 func (w *Watchdog) appendEvent(eventType, ticketID string, data map[string]any) error {
 	if w.events == nil || w.dryRun {
