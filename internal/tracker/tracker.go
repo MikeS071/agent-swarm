@@ -22,6 +22,7 @@ type Ticket struct {
 	Depends    []string `json:"depends"`
 	Branch     string   `json:"branch,omitempty"`
 	Desc       string   `json:"desc,omitempty"`
+	Profile    string   `json:"profile,omitempty"`
 	SHA        string   `json:"sha,omitempty"`
 	StartedAt  string   `json:"startedAt,omitempty"`
 	FinishedAt string   `json:"finishedAt,omitempty"`

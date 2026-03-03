@@ -28,7 +28,8 @@ type ProjectConfig struct {
 	PromptDir  string `toml:"prompt_dir"`
 	Tracker     string `toml:"tracker"`
 	AutoApprove bool   `toml:"auto_approve"`
-	SpecFile    string `toml:"spec_file"`
+	SpecFile       string `toml:"spec_file"`
+	DefaultProfile string `toml:"default_profile"`
 }
 
 type BackendConfig struct {

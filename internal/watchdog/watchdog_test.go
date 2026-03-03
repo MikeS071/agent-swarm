@@ -360,3 +360,133 @@ func writeFile(t *testing.T, path, content string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+func TestAssemblePromptLayers(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Create project structure
+	os.MkdirAll(filepath.Join(tmp, "swarm", "prompts"), 0o755)
+	os.MkdirAll(filepath.Join(tmp, ".agents", "profiles"), 0o755)
+
+	// Layer 1: AGENTS.md
+	os.WriteFile(filepath.Join(tmp, "AGENTS.md"), []byte("# Governance Rules"), 0o644)
+
+	// Layer 2: spec file
+	os.WriteFile(filepath.Join(tmp, "SPEC.md"), []byte("# Project Spec"), 0o644)
+
+	// Layer 3: profile
+	os.WriteFile(filepath.Join(tmp, ".agents", "profiles", "code-agent.md"), []byte("# Code Agent Profile"), 0o644)
+
+	// Layer 5: footer
+	os.WriteFile(filepath.Join(tmp, "swarm", "prompt-footer.md"), []byte("# Footer"), 0o644)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:           "test",
+			Tracker:        filepath.Join(tmp, "swarm", "tracker.json"),
+			PromptDir:      filepath.Join(tmp, "swarm", "prompts"),
+			SpecFile:       "SPEC.md",
+			DefaultProfile: "code-agent",
+		},
+	}
+
+	w := &Watchdog{config: cfg}
+
+	tk := tracker.Ticket{Profile: ""}
+	ticketPrompt := []byte("# mc-01\n\nImplement the thing")
+
+	result := string(w.assemblePrompt(tk, ticketPrompt))
+
+	// Check all layers present
+	if !strings.Contains(result, "# Governance Rules") {
+		t.Error("missing AGENTS.md layer")
+	}
+	if !strings.Contains(result, "# Project Spec") {
+		t.Error("missing spec layer")
+	}
+	if !strings.Contains(result, "# Code Agent Profile") {
+		t.Error("missing profile layer")
+	}
+	if !strings.Contains(result, "Implement the thing") {
+		t.Error("missing ticket prompt layer")
+	}
+	if !strings.Contains(result, "# Footer") {
+		t.Error("missing footer layer")
+	}
+
+	// Check order: governance before spec before profile before ticket
+	govIdx := strings.Index(result, "Governance Rules")
+	specIdx := strings.Index(result, "Project Spec")
+	profIdx := strings.Index(result, "Code Agent Profile")
+	ticketIdx := strings.Index(result, "Implement the thing")
+	footerIdx := strings.Index(result, "# Footer")
+
+	if govIdx >= specIdx {
+		t.Error("governance should come before spec")
+	}
+	if specIdx >= profIdx {
+		t.Error("spec should come before profile")
+	}
+	if profIdx >= ticketIdx {
+		t.Error("profile should come before ticket")
+	}
+	if ticketIdx >= footerIdx {
+		t.Error("ticket should come before footer")
+	}
+}
+
+func TestAssemblePromptTicketProfileOverridesDefault(t *testing.T) {
+	tmp := t.TempDir()
+
+	os.MkdirAll(filepath.Join(tmp, "swarm", "prompts"), 0o755)
+	os.MkdirAll(filepath.Join(tmp, ".agents", "profiles"), 0o755)
+
+	os.WriteFile(filepath.Join(tmp, ".agents", "profiles", "code-agent.md"), []byte("DEFAULT PROFILE"), 0o644)
+	os.WriteFile(filepath.Join(tmp, ".agents", "profiles", "security-reviewer.md"), []byte("SECURITY PROFILE"), 0o644)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:           "test",
+			Tracker:        filepath.Join(tmp, "swarm", "tracker.json"),
+			PromptDir:      filepath.Join(tmp, "swarm", "prompts"),
+			DefaultProfile: "code-agent",
+		},
+	}
+
+	w := &Watchdog{config: cfg}
+
+	// Ticket with explicit profile should override default
+	tk := tracker.Ticket{Profile: "security-reviewer"}
+	result := string(w.assemblePrompt(tk, []byte("task")))
+
+	if strings.Contains(result, "DEFAULT PROFILE") {
+		t.Error("should NOT contain default profile when ticket has explicit profile")
+	}
+	if !strings.Contains(result, "SECURITY PROFILE") {
+		t.Error("should contain ticket-level profile")
+	}
+}
+
+func TestAssemblePromptNoProfileGraceful(t *testing.T) {
+	tmp := t.TempDir()
+
+	os.MkdirAll(filepath.Join(tmp, "swarm", "prompts"), 0o755)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:      "test",
+			Tracker:   filepath.Join(tmp, "swarm", "tracker.json"),
+			PromptDir: filepath.Join(tmp, "swarm", "prompts"),
+		},
+	}
+
+	w := &Watchdog{config: cfg}
+
+	// No profile, no AGENTS.md, no spec — should still work with just the ticket
+	tk := tracker.Ticket{}
+	result := string(w.assemblePrompt(tk, []byte("just the task")))
+
+	if result != "just the task" {
+		t.Errorf("expected just the ticket prompt, got: %s", result)
+	}
+}

@@ -456,45 +456,19 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		if desc == "" {
 			desc = "Implement " + ticketID
 		}
-		var specSection string
-		if w.config.Project.SpecFile != "" {
-			specPath := w.config.Project.SpecFile
-			if !filepath.IsAbs(specPath) {
-				specPath = filepath.Join(filepath.Dir(w.config.Project.Tracker), "..", specPath)
-			}
-			if specData, serr := os.ReadFile(specPath); serr == nil {
-				specSection = fmt.Sprintf("\n## Project Spec\n\n%s\n", string(specData))
-			}
-		}
-		promptBody = []byte(fmt.Sprintf("# %s\n\n## Objective\n%s\n%s", ticketID, desc, specSection))
+		promptBody = []byte(fmt.Sprintf("# %s\n\n## Objective\n%s\n", ticketID, desc))
 		w.log("WARN: no prompt file for %s — auto-generated from description + spec", ticketID)
 		// Also save it for future reference
 		_ = os.MkdirAll(filepath.Dir(srcPrompt), 0o755)
 		_ = os.WriteFile(srcPrompt, promptBody, 0o644)
 	}
 
-	promptPath := filepath.Join(workDir, ".codex-prompt.md")
-	if err := os.WriteFile(promptPath, promptBody, 0o644); err != nil {
-		return fmt.Errorf("write prompt %s: %w", promptPath, err)
-	}
+	// Assemble layered prompt: governance → spec → profile → ticket → footer
+	assembled := w.assemblePrompt(tk, promptBody)
 
-	footerPath := filepath.Join(filepath.Dir(w.config.Project.PromptDir), "prompt-footer.md")
-	if footer, err := os.ReadFile(footerPath); err == nil {
-		f, err := os.OpenFile(promptPath, os.O_APPEND|os.O_WRONLY, 0)
-		if err != nil {
-			return err
-		}
-		if _, err := f.Write([]byte("\n\n")); err != nil {
-			_ = f.Close()
-			return err
-		}
-		if _, err := f.Write(footer); err != nil {
-			_ = f.Close()
-			return err
-		}
-		if err := f.Close(); err != nil {
-			return err
-		}
+	promptPath := filepath.Join(workDir, ".codex-prompt.md")
+	if err := os.WriteFile(promptPath, assembled, 0o644); err != nil {
+		return fmt.Errorf("write prompt %s: %w", promptPath, err)
 	}
 
 	if w.dryRun {
@@ -527,6 +501,85 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	}
 	return w.appendEvent("ticket_spawned", ticketID, map[string]any{"session": handle.SessionName})
 }
+
+// projectRoot returns the project root directory (parent of swarm/).
+func (w *Watchdog) projectRoot() string {
+	// Tracker is at swarm/tracker.json — go up two levels
+	return filepath.Dir(filepath.Dir(w.config.Project.Tracker))
+}
+
+// assemblePrompt builds the full layered prompt:
+// Layer 1: AGENTS.md (governance)
+// Layer 2: spec_file (project context)
+// Layer 3: profile (agent role)
+// Layer 4: ticket prompt (the actual task)
+// Layer 5: footer (quality gates, commit rules)
+func (w *Watchdog) assemblePrompt(tk tracker.Ticket, ticketPrompt []byte) []byte {
+	var parts [][]byte
+	root := w.projectRoot()
+
+	// Layer 1: AGENTS.md
+	agentsPath := filepath.Join(root, "AGENTS.md")
+	if data, err := os.ReadFile(agentsPath); err == nil {
+		parts = append(parts, data)
+	}
+
+	// Layer 2: spec_file
+	if w.config.Project.SpecFile != "" {
+		specPath := w.config.Project.SpecFile
+		if !filepath.IsAbs(specPath) {
+			specPath = filepath.Join(root, specPath)
+		}
+		if data, err := os.ReadFile(specPath); err == nil {
+			parts = append(parts, []byte("# Project Specification\n\n"))
+			parts = append(parts, data)
+		}
+	}
+
+	// Layer 3: profile (ticket-level overrides project default)
+	profileName := tk.Profile
+	if profileName == "" {
+		profileName = w.config.Project.DefaultProfile
+	}
+	if profileName != "" {
+		profilePath := filepath.Join(root, ".agents", "profiles", profileName+".md")
+		if data, err := os.ReadFile(profilePath); err == nil {
+			parts = append(parts, []byte("# Agent Profile\n\n"))
+			parts = append(parts, data)
+		} else {
+			w.log("WARN: profile %q not found at %s", profileName, profilePath)
+		}
+	}
+
+	// Layer 4: ticket prompt
+	parts = append(parts, ticketPrompt)
+
+	// Layer 5: footer
+	footerPath := filepath.Join(filepath.Dir(w.config.Project.PromptDir), "prompt-footer.md")
+	if data, err := os.ReadFile(footerPath); err == nil {
+		parts = append(parts, data)
+	}
+
+	return joinParts(parts)
+}
+
+// joinParts concatenates byte slices with double-newline separators.
+func joinParts(parts [][]byte) []byte {
+	sep := []byte("\n\n---\n\n")
+	total := 0
+	for _, p := range parts {
+		total += len(p) + len(sep)
+	}
+	buf := make([]byte, 0, total)
+	for i, p := range parts {
+		if i > 0 {
+			buf = append(buf, sep...)
+		}
+		buf = append(buf, p...)
+	}
+	return buf
+}
+
 
 func (w *Watchdog) appendEvent(eventType, ticketID string, data map[string]any) error {
 	if w.events == nil || w.dryRun {
