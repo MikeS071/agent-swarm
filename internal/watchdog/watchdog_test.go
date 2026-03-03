@@ -346,6 +346,157 @@ func TestRunningAgentCountUsesSessionLister(t *testing.T) {
 	}
 }
 
+func TestSpawnTicketPersistsSessionMetadata(t *testing.T) {
+	repo := initRepo(t)
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	writeFile(t, filepath.Join(promptDir, "sw-01.md"), "# sw-01\n")
+
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-01": {Status: tracker.StatusTodo, Phase: 1, Branch: "feat/sw-01"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Type: "codex-tmux", Model: "gpt-5.3-codex", Effort: "high"},
+	}
+	be := &fakeBackend{
+		name: "codex-tmux",
+		spawnOut: backend.AgentHandle{
+			SessionName: "swarm-proj_sw-01",
+			StartedAt:   time.Now().UTC(),
+		},
+	}
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	w := New(cfg, tr, dispatcher.New(cfg, tr), be, wtMgr, &fakeNotifier{})
+
+	if err := w.SpawnTicket(context.Background(), "sw-01"); err != nil {
+		t.Fatalf("SpawnTicket() error = %v", err)
+	}
+
+	got := tr.Tickets["sw-01"]
+	if got.SessionName != "swarm-proj_sw-01" {
+		t.Fatalf("SessionName = %q, want %q", got.SessionName, "swarm-proj_sw-01")
+	}
+	if got.SessionBackend != "codex-tmux" {
+		t.Fatalf("SessionBackend = %q, want %q", got.SessionBackend, "codex-tmux")
+	}
+	if got.SessionModel != "gpt-5.3-codex" {
+		t.Fatalf("SessionModel = %q, want %q", got.SessionModel, "gpt-5.3-codex")
+	}
+}
+
+func TestRunOnceUsesTicketSessionMetadata(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	wtPath, err := wtMgr.Create("sw-01", "feat/sw-01")
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	writeFile(t, filepath.Join(wtPath, "done.txt"), "ok\n")
+	runGit(t, wtPath, "add", "done.txt")
+	runGit(t, wtPath, "commit", "-m", "done")
+
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	writeFile(t, filepath.Join(promptDir, "sw-01.md"), "# sw-01\n")
+
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-01": {
+			Status:         tracker.StatusRunning,
+			Phase:          1,
+			Branch:         "feat/sw-01",
+			StartedAt:      time.Now().Add(-1 * time.Minute).UTC().Format(time.RFC3339),
+			SessionName:    "swarm-proj_sw-01",
+			SessionBackend: "codex-tmux",
+		},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Type: "codex-tmux", Model: "gpt-5.3-codex", Effort: "high"},
+	}
+	be := &fakeBackend{
+		name:   "codex-tmux",
+		exited: map[string]bool{"swarm-proj_sw-01": true},
+	}
+	w := New(cfg, tr, dispatcher.New(cfg, tr), be, wtMgr, &fakeNotifier{})
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if got := tr.Tickets["sw-01"].Status; got != tracker.StatusDone {
+		t.Fatalf("status = %q, want %q", got, tracker.StatusDone)
+	}
+}
+
+func TestRunningAgentCountUsesSessionMetadataAcrossBackends(t *testing.T) {
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-01": {
+			Status:         tracker.StatusRunning,
+			SessionName:    "swarm-proj_sw-01",
+			SessionBackend: "codex-tmux",
+		},
+		"sw-02": {
+			Status:         tracker.StatusRunning,
+			SessionName:    "alt-session-02",
+			SessionBackend: "alt-backend",
+		},
+	})
+	cfg := config.Default()
+	cfg.Project.Name = "proj"
+	cfg.Backend.Type = "codex-tmux"
+	defaultBackend := &fakeBackend{
+		name:  "codex-tmux",
+		alive: map[string]bool{"swarm-proj_sw-01": true},
+	}
+	altBackend := &fakeBackend{
+		name:  "alt-backend",
+		alive: map[string]bool{"alt-session-02": true},
+	}
+
+	w := New(cfg, tr, nil, defaultBackend, worktree.New(t.TempDir(), filepath.Join(t.TempDir(), "wts"), "main"), &fakeNotifier{})
+	w.backendFactory = func(backendType string) (backend.AgentBackend, error) {
+		switch backendType {
+		case "alt-backend":
+			return altBackend, nil
+		default:
+			return defaultBackend, nil
+		}
+	}
+
+	count, err := w.runningAgentCount(context.Background())
+	if err != nil {
+		t.Fatalf("runningAgentCount() error = %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("runningAgentCount() = %d, want 2", count)
+	}
+	if len(altBackend.aliveSeen) == 0 || altBackend.aliveSeen[0].SessionName != "alt-session-02" {
+		t.Fatalf("alt backend was not called with session metadata: %#v", altBackend.aliveSeen)
+	}
+}
+
 func initRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

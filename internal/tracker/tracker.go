@@ -10,22 +10,25 @@ import (
 )
 
 type Tracker struct {
-	Project string            `json:"project"`
-	Tickets map[string]Ticket `json:"tickets"`
+	Project       string            `json:"project"`
+	Tickets       map[string]Ticket `json:"tickets"`
 	UnlockedPhase int               `json:"unlocked_phase,omitempty"`
 	filePath      string            `json:"-"`
 }
 
 type Ticket struct {
-	Status     string   `json:"status"`
-	Phase      int      `json:"phase"`
-	Depends    []string `json:"depends"`
-	Branch     string   `json:"branch,omitempty"`
-	Desc       string   `json:"desc,omitempty"`
-	Profile    string   `json:"profile,omitempty"`
-	SHA        string   `json:"sha,omitempty"`
-	StartedAt  string   `json:"startedAt,omitempty"`
-	FinishedAt string   `json:"finishedAt,omitempty"`
+	Status         string   `json:"status"`
+	Phase          int      `json:"phase"`
+	Depends        []string `json:"depends"`
+	Branch         string   `json:"branch,omitempty"`
+	Desc           string   `json:"desc,omitempty"`
+	Profile        string   `json:"profile,omitempty"`
+	SHA            string   `json:"sha,omitempty"`
+	StartedAt      string   `json:"startedAt,omitempty"`
+	FinishedAt     string   `json:"finishedAt,omitempty"`
+	SessionName    string   `json:"session_name,omitempty"`
+	SessionBackend string   `json:"session_backend,omitempty"`
+	SessionModel   string   `json:"session_model,omitempty"`
 }
 
 type Stats struct {
