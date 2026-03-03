@@ -12,44 +12,39 @@ import (
 )
 
 func TestSelectProfileName(t *testing.T) {
-	t.Parallel()
-
-	w := &Watchdog{
-		config: &config.Config{
-			Project: config.ProjectConfig{
-				DefaultProfile: "code-agent",
-			},
-		},
-	}
-
 	cases := []struct {
 		name     string
 		ticketID string
 		ticket   tracker.Ticket
+		def      string
 		want     string
 	}{
 		{
 			name:     "explicit profile overrides inferred and default",
 			ticketID: "sec-auth",
 			ticket:   tracker.Ticket{Profile: "doc-updater"},
+			def:      "code-agent",
 			want:     "doc-updater",
 		},
 		{
 			name:     "prefix inferred profile when explicit missing",
 			ticketID: "sec-auth",
 			ticket:   tracker.Ticket{},
+			def:      "code-agent",
 			want:     "security-reviewer",
 		},
 		{
 			name:     "default profile fallback when no prefix mapping",
 			ticketID: "sw-01",
 			ticket:   tracker.Ticket{},
+			def:      "code-agent",
 			want:     "code-agent",
 		},
 		{
 			name:     "empty when no explicit inferred or default profile",
 			ticketID: "sw-01",
 			ticket:   tracker.Ticket{},
+			def:      "",
 			want:     "",
 		},
 	}
@@ -57,13 +52,14 @@ func TestSelectProfileName(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			origDefault := w.config.Project.DefaultProfile
-			if tc.name == "empty when no explicit inferred or default profile" {
-				w.config.Project.DefaultProfile = ""
+			w := &Watchdog{
+				config: &config.Config{
+					Project: config.ProjectConfig{
+						DefaultProfile: tc.def,
+					},
+				},
 			}
 			got := w.selectProfileName(tc.ticketID, tc.ticket)
-			w.config.Project.DefaultProfile = origDefault
 			if got != tc.want {
 				t.Fatalf("selectProfileName(%q) = %q, want %q", tc.ticketID, got, tc.want)
 			}
@@ -114,26 +110,10 @@ func TestParseProfileFrontmatterModel(t *testing.T) {
 }
 
 func TestResolveSpawnModel(t *testing.T) {
-	t.Parallel()
-
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, ".agents", "profiles", "code-agent.md"), "---\nmodel: gpt-5.2\n---\n")
 	writeFile(t, filepath.Join(root, ".agents", "profiles", "security-reviewer.md"), "---\nmodel: sonnet\n---\n")
 	writeFile(t, filepath.Join(root, ".agents", "profiles", "doc-updater.md"), "---\nname: doc-updater\n---\n")
-
-	cfg := &config.Config{
-		Project: config.ProjectConfig{
-			Tracker:        filepath.Join(root, "swarm", "tracker.json"),
-			PromptDir:      filepath.Join(root, "swarm", "prompts"),
-			DefaultProfile: "code-agent",
-		},
-		Backend: config.BackendConfig{
-			Type:   "codex-tmux",
-			Model:  "gpt-5.3-codex",
-			Effort: "high",
-		},
-	}
-	w := &Watchdog{config: cfg}
 
 	cases := []struct {
 		name       string
@@ -184,13 +164,25 @@ func TestResolveSpawnModel(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			origType := w.config.Backend.Type
+			backendType := "codex-tmux"
 			if tc.backendTyp != "" {
-				w.config.Backend.Type = tc.backendTyp
+				backendType = tc.backendTyp
+			}
+			w := &Watchdog{
+				config: &config.Config{
+					Project: config.ProjectConfig{
+						Tracker:        filepath.Join(root, "swarm", "tracker.json"),
+						PromptDir:      filepath.Join(root, "swarm", "prompts"),
+						DefaultProfile: "code-agent",
+					},
+					Backend: config.BackendConfig{
+						Type:   backendType,
+						Model:  "gpt-5.3-codex",
+						Effort: "high",
+					},
+				},
 			}
 			got := w.resolveSpawnModel(tc.ticketID, tc.ticket)
-			w.config.Backend.Type = origType
 			if got != tc.want {
 				t.Fatalf("resolveSpawnModel(%q) = %q, want %q", tc.ticketID, got, tc.want)
 			}
