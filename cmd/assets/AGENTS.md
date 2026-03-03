@@ -1,28 +1,82 @@
 # AGENTS.md — Project Agent Contract
 
-All agents operating in this repository are bound to this contract.
+All agents operating in this repository are bound to this contract. No exceptions.
+
+## Core Principles
+
+1. **Test-Driven** — Write tests before implementation. 80%+ coverage required.
+2. **Security-First** — Never compromise on security. Validate all inputs. No hardcoded secrets.
+3. **Immutability** — Create new objects, never mutate existing ones across async boundaries.
+4. **Scope Discipline** — Only touch files relevant to your ticket. No drive-by fixes.
+5. **Plan Before Execute** — State assumptions, scope boundary, and what you are NOT building before writing code.
 
 ## Golden Rules (Non-Negotiable)
 
 1. **Never work directly on main/master** — use feature branches (`feat/<ticket-id>`)
 2. **Tests before code** — write failing tests first, then implement
-3. **Stay in scope** — only touch files relevant to your ticket. No drive-by refactors.
-4. **Commit and push before exiting** — never exit without `git add -A && git commit && git push`
-5. **No hardcoded secrets** — use environment variables or secret managers
-6. **Small commits** — one logical change per commit, conventional format (`feat:`, `fix:`, `refactor:`, etc.)
+3. **Stay in scope** — only touch files relevant to your ticket
+4. **Commit and push before exiting** — `git add -A && git commit && git push`. Do NOT ask for permission. Do NOT exit without pushing.
+5. **No hardcoded secrets** — use environment variables or secret managers. Rotate any exposed secret immediately.
+6. **Small commits** — one logical change per commit, conventional format
+
+## Available Agent Profiles
+
+| Profile | Purpose | Mode |
+|---------|---------|------|
+| planner | Implementation planning, phased breakdown | Research |
+| architect | System design, ADRs, trade-off analysis | Research |
+| tdd-guide | Test-driven development enforcement | Development |
+| code-agent | Story implementation from spec | Development |
+| code-reviewer | Code quality, severity-tiered findings | Review |
+| security-reviewer | OWASP Top 10, secrets, auth verification | Review |
+| build-error-resolver | Fix build/type errors with minimal diffs | Development |
+| go-build-resolver | Go-specific build error resolution | Development |
+| go-reviewer | Go idioms, concurrency, error handling | Review |
+| python-reviewer | PEP 8, type hints, Pythonic patterns | Review |
+| database-reviewer | PostgreSQL queries, schema, security | Review |
+| e2e-runner | End-to-end test execution and reporting | Development |
+| refactor-cleaner | Dead code removal, dependency cleanup | Development |
+| doc-updater | Feature and technical documentation | Development |
 
 ## TDD Process (Mandatory)
 
-1. **Read** the task spec and understand inputs, outputs, error cases
-2. **Write failing tests** — happy path, error path, edge cases
+1. **Read** the task spec — understand inputs, outputs, error cases
+2. **Write failing tests** — happy path, error path, edge cases. Tests MUST fail before implementation.
 3. **Implement** minimum code to make tests pass
-4. **Quality gates** — tests pass, build passes, lint passes
+4. **Quality gates** — tests pass → build passes → lint passes
 5. **Commit and push** — conventional commit message, push to origin
 
-## File Size Limits
+Troubleshoot failures: check test isolation → verify mocks → fix implementation (not tests, unless tests are wrong).
 
-- New files: 200-400 lines target, never exceed 800
+## Security Guidelines
+
+**Before ANY commit:**
+- No hardcoded secrets (API keys, passwords, tokens)
+- All user inputs validated at system boundaries
+- SQL injection prevention (parameterized queries only)
+- XSS prevention (sanitized output)
+- Authentication/authorization verified on protected routes
+- Error messages don't leak sensitive data
+
+**If security issue found:** STOP → fix CRITICAL issues before continuing → rotate exposed secrets → check for similar issues in codebase.
+
+## Coding Style
+
+**File organization:** Many small files over few large ones.
+- New files: 200-400 lines target, hard max 800
 - Existing files >800 lines: grandfathered until touched
+- Organize by feature/domain, not by type
+- High cohesion, low coupling
+
+**Error handling:** Handle errors at every level. No silent catch blocks. No swallowed errors. Provide context in error messages (`fmt.Errorf("operation: %w", err)` / `throw new Error("context: " + msg)`).
+
+**Input validation:** Validate all external input at route/API boundaries before passing to business logic. Use schema-based validation. Fail fast with clear messages.
+
+**Code quality:**
+- Functions < 50 lines, files < 800 lines
+- No deep nesting (> 4 levels — use early returns)
+- No hardcoded values — use constants or config
+- Readable, well-named identifiers
 
 ## Git Hygiene
 
@@ -32,18 +86,41 @@ All agents operating in this repository are bound to this contract.
 
 ## Review Output Format
 
-If you are a reviewer (code-reviewer, security-reviewer), output findings as JSON:
+All reviewer agents (code-reviewer, security-reviewer, go-reviewer, python-reviewer, database-reviewer) MUST output findings as JSON:
+
 ```json
 {
-  "findings": [{"severity": "critical|high|medium|low", "category": "...", "file": "...", "line": 0, "title": "...", "description": "...", "suggested_fix": "..."}],
+  "findings": [
+    {
+      "severity": "critical|high|medium|low",
+      "category": "security|correctness|performance|style|documentation",
+      "file": "path/to/file",
+      "line": 42,
+      "title": "Short description",
+      "description": "What is wrong and why it matters",
+      "suggested_fix": "Specific action to take"
+    }
+  ],
   "verdict": "BLOCK|WARN|PASS",
-  "summary": "..."
+  "summary": "N critical, N high, N medium findings"
 }
 ```
 
+**Verdict rules:** Any CRITICAL or HIGH → BLOCK. Only MEDIUM/LOW → WARN. No findings → PASS.
+
 ## What NOT to Do
 
-- Do NOT modify `.env*`, `package.json` deps, or config files unless your ticket requires it
-- Do NOT ask for permission to commit — just commit
-- Do NOT attempt to fix pre-existing test/build failures unrelated to your ticket
-- Do NOT run dev servers — your job is to write code, test, commit, push
+- ❌ Modify `.env*`, dependency files, or config files unless your ticket requires it
+- ❌ Ask for permission to commit — just commit and push
+- ❌ Fix pre-existing test/build failures unrelated to your ticket
+- ❌ Run dev servers — write code, test, commit, push
+- ❌ Add helpers, abstractions, or utilities not in the spec — flag instead
+- ❌ Refactor code outside your scope, even if it's messy
+
+## Success Criteria
+
+- All tests pass with 80%+ coverage on touched code
+- No security vulnerabilities introduced
+- Build and lint pass cleanly
+- Code is readable and maintainable
+- Scope matches the ticket spec — nothing more, nothing less
