@@ -9,16 +9,13 @@
 
 Types: feat, fix, refactor, docs, test, chore, perf, ci
 
-Note: Attribution disabled globally via ~/.claude/settings.json.
+## Branch Naming
+```
+feat/<ticket-id>
+```
 
-## Pull Request Workflow
-
-When creating PRs:
-1. Analyze full commit history (not just latest commit)
-2. Use `git diff [base-branch]...HEAD` to see all changes
-3. Draft comprehensive PR summary
-4. Include test plan with TODOs
-5. Push with `-u` flag if new branch
-
-> For the full development process (planning, TDD, code review) before git operations,
-> see [development-workflow.md](./development-workflow.md).
+## Rules
+- One commit per ticket — no mixing unrelated changes
+- Always `git add -A && git commit && git push origin HEAD` before exiting
+- Never work directly on main/master
+- Use `git push -u origin HEAD` for new branches
