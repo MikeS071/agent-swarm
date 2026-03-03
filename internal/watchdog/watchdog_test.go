@@ -490,3 +490,293 @@ func TestAssemblePromptNoProfileGraceful(t *testing.T) {
 		t.Errorf("expected just the ticket prompt, got: %s", result)
 	}
 }
+
+func TestRunOnceReviewDoneCreatesFixTicketsForCriticalHigh(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	wtPath, err := wtMgr.Create("review-cache", "feat/review-cache")
+	if err != nil {
+		t.Fatalf("create review worktree: %v", err)
+	}
+	writeFile(t, filepath.Join(wtPath, "review.txt"), "done\n")
+	runGit(t, wtPath, "add", "review.txt")
+	runGit(t, wtPath, "commit", "-m", "review done")
+
+	trackerPath := filepath.Join(repo, "swarm", "tracker.json")
+	promptDir := filepath.Join(repo, "swarm", "prompts")
+	reportPath := filepath.Join(repo, "swarm", "features", "cache", "review-report.json")
+	writeFile(t, reportPath, `{
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "security",
+      "file": "api/routes.go",
+      "line": 10,
+      "title": "SQL injection",
+      "description": "Unsafe query building",
+      "suggested_fix": "Use placeholders"
+    },
+    {
+      "severity": "HIGH",
+      "category": "correctness",
+      "file": "handler.go",
+      "line": 22,
+      "title": "Nil pointer panic",
+      "description": "Unchecked pointer",
+      "suggested_fix": "Validate nil"
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "x.go",
+      "line": 2,
+      "title": "nits",
+      "description": "minor",
+      "suggested_fix": "optional"
+    }
+  ],
+  "verdict": "BLOCK",
+  "summary": "mixed"
+}`)
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"hold-1":       {Status: tracker.StatusRunning, Phase: 3, Branch: "feat/hold-1"},
+		"review-cache": {Status: tracker.StatusRunning, Phase: 3, Branch: "feat/review-cache"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+	be := &fakeBackend{
+		exited: map[string]bool{"swarm-review-cache": true},
+		alive:  map[string]bool{"swarm-hold-1": true},
+	}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if got := tr.Tickets["review-cache"].Status; got != tracker.StatusDone {
+		t.Fatalf("review-cache status = %q, want done", got)
+	}
+	if _, ok := tr.Tickets["fix-cache-1"]; !ok {
+		t.Fatalf("expected fix-cache-1 ticket")
+	}
+	if _, ok := tr.Tickets["fix-cache-2"]; !ok {
+		t.Fatalf("expected fix-cache-2 ticket")
+	}
+	if _, ok := tr.Tickets["fix-cache-3"]; ok {
+		t.Fatalf("did not expect fix-cache-3 ticket")
+	}
+
+	fix1 := tr.Tickets["fix-cache-1"]
+	if fix1.Phase != 3 {
+		t.Fatalf("fix-cache-1 phase = %d, want 3", fix1.Phase)
+	}
+	if len(fix1.Depends) != 1 || fix1.Depends[0] != "review-cache" {
+		t.Fatalf("fix-cache-1 deps = %#v, want [review-cache]", fix1.Depends)
+	}
+
+	prompt1, err := os.ReadFile(filepath.Join(promptDir, "fix-cache-1.md"))
+	if err != nil {
+		t.Fatalf("read fix prompt 1: %v", err)
+	}
+	prompt2, err := os.ReadFile(filepath.Join(promptDir, "fix-cache-2.md"))
+	if err != nil {
+		t.Fatalf("read fix prompt 2: %v", err)
+	}
+	if !strings.Contains(string(prompt1), "SQL injection") {
+		t.Fatalf("expected fix prompt 1 to include finding title")
+	}
+	if !strings.Contains(string(prompt2), "Nil pointer panic") {
+		t.Fatalf("expected fix prompt 2 to include finding title")
+	}
+}
+
+func TestRunOnceSecDoneWithoutCriticalHighCreatesNoFixTickets(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	wtPath, err := wtMgr.Create("sec-cache", "feat/sec-cache")
+	if err != nil {
+		t.Fatalf("create sec worktree: %v", err)
+	}
+	writeFile(t, filepath.Join(wtPath, "sec.txt"), "done\n")
+	runGit(t, wtPath, "add", "sec.txt")
+	runGit(t, wtPath, "commit", "-m", "sec done")
+
+	trackerPath := filepath.Join(repo, "swarm", "tracker.json")
+	promptDir := filepath.Join(repo, "swarm", "prompts")
+	reportPath := filepath.Join(repo, "swarm", "features", "cache", "sec-report.json")
+	writeFile(t, reportPath, `{
+  "findings": [
+    {"severity": "medium", "title": "m1"},
+    {"severity": "low", "title": "l1"}
+  ],
+  "verdict": "WARN",
+  "summary": "non-blocking"
+}`)
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"hold-1":    {Status: tracker.StatusRunning, Phase: 4, Branch: "feat/hold-1"},
+		"sec-cache": {Status: tracker.StatusRunning, Phase: 4, Branch: "feat/sec-cache"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+	be := &fakeBackend{
+		exited: map[string]bool{"swarm-sec-cache": true},
+		alive:  map[string]bool{"swarm-hold-1": true},
+	}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	for id := range tr.Tickets {
+		if strings.HasPrefix(id, "fix-cache-") {
+			t.Fatalf("unexpected fix ticket %q", id)
+		}
+	}
+}
+
+func TestRunOnceReviewDoneWithInvalidFindingsJSONIsNonFatal(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	wtPath, err := wtMgr.Create("review-cache", "feat/review-cache")
+	if err != nil {
+		t.Fatalf("create review worktree: %v", err)
+	}
+	writeFile(t, filepath.Join(wtPath, "review.txt"), "done\n")
+	runGit(t, wtPath, "add", "review.txt")
+	runGit(t, wtPath, "commit", "-m", "review done")
+
+	trackerPath := filepath.Join(repo, "swarm", "tracker.json")
+	promptDir := filepath.Join(repo, "swarm", "prompts")
+	reportPath := filepath.Join(repo, "swarm", "features", "cache", "review-report.json")
+	writeFile(t, reportPath, `{not-valid-json`)
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"hold-1":       {Status: tracker.StatusRunning, Phase: 2, Branch: "feat/hold-1"},
+		"review-cache": {Status: tracker.StatusRunning, Phase: 2, Branch: "feat/review-cache"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+	be := &fakeBackend{
+		exited: map[string]bool{"swarm-review-cache": true},
+		alive:  map[string]bool{"swarm-hold-1": true},
+	}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once returned error for invalid findings json: %v", err)
+	}
+
+	for id := range tr.Tickets {
+		if strings.HasPrefix(id, "fix-cache-") {
+			t.Fatalf("unexpected fix ticket %q for invalid report", id)
+		}
+	}
+}
+
+func TestRunOnceReviewDoneFixNumberingContinuesFromExisting(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	wtPath, err := wtMgr.Create("review-cache", "feat/review-cache")
+	if err != nil {
+		t.Fatalf("create review worktree: %v", err)
+	}
+	writeFile(t, filepath.Join(wtPath, "review.txt"), "done\n")
+	runGit(t, wtPath, "add", "review.txt")
+	runGit(t, wtPath, "commit", "-m", "review done")
+
+	trackerPath := filepath.Join(repo, "swarm", "tracker.json")
+	promptDir := filepath.Join(repo, "swarm", "prompts")
+	reportPath := filepath.Join(repo, "swarm", "features", "cache", "review-report.json")
+	writeFile(t, reportPath, `{
+  "findings": [
+    {"severity": "high", "title": "h1"},
+    {"severity": "critical", "title": "c1"}
+  ],
+  "verdict": "BLOCK",
+  "summary": "2 findings"
+}`)
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"hold-1":       {Status: tracker.StatusRunning, Phase: 5, Branch: "feat/hold-1"},
+		"review-cache": {Status: tracker.StatusRunning, Phase: 5, Branch: "feat/review-cache"},
+		"fix-cache-1":  {Status: tracker.StatusDone, Phase: 5, Branch: "feat/fix-cache-1"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+	be := &fakeBackend{
+		exited: map[string]bool{"swarm-review-cache": true},
+		alive:  map[string]bool{"swarm-hold-1": true},
+	}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if _, ok := tr.Tickets["fix-cache-2"]; !ok {
+		t.Fatalf("expected fix-cache-2 ticket")
+	}
+	if _, ok := tr.Tickets["fix-cache-3"]; !ok {
+		t.Fatalf("expected fix-cache-3 ticket")
+	}
+}

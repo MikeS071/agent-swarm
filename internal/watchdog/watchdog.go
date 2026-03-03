@@ -36,6 +36,20 @@ type EventLog struct {
 	mu   sync.Mutex
 }
 
+type reviewReport struct {
+	Findings []reviewFinding `json:"findings"`
+}
+
+type reviewFinding struct {
+	Severity     string `json:"severity"`
+	Category     string `json:"category"`
+	File         string `json:"file"`
+	Line         int    `json:"line"`
+	Title        string `json:"title"`
+	Description  string `json:"description"`
+	SuggestedFix string `json:"suggested_fix"`
+}
+
 // NewEventLog creates an append-only event log writer.
 func NewEventLog(path string) *EventLog {
 	return &EventLog{path: path}
@@ -233,6 +247,11 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				}
 				sig, spawnable := w.dispatcher.MarkDone(ticketID, sha)
 				delete(w.retries, ticketID)
+				if created, err := w.autoCreateFixTickets(ticketID); err != nil {
+					w.log("WARN: autoCreateFixTickets(%s): %v", ticketID, err)
+				} else if created > 0 {
+					sig, spawnable = w.dispatcher.Evaluate()
+				}
 				// Clean up agent log on successful completion
 				if w.config != nil && w.config.Project.Tracker != "" {
 					logFile := filepath.Join(filepath.Dir(w.config.Project.Tracker), "logs", ticketID+".log")
@@ -578,6 +597,184 @@ func joinParts(parts [][]byte) []byte {
 		buf = append(buf, p...)
 	}
 	return buf
+}
+
+func parseReviewSource(ticketID string) (feature, reportName string, ok bool) {
+	if strings.HasPrefix(ticketID, "review-") && len(ticketID) > len("review-") {
+		return strings.TrimPrefix(ticketID, "review-"), "review-report.json", true
+	}
+	if strings.HasPrefix(ticketID, "sec-") && len(ticketID) > len("sec-") {
+		return strings.TrimPrefix(ticketID, "sec-"), "sec-report.json", true
+	}
+	return "", "", false
+}
+
+func isActionableSeverity(severity string) bool {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical", "high":
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *Watchdog) nextFixIndex(feature string) int {
+	prefix := "fix-" + feature + "-"
+	next := 1
+	for id := range w.tracker.Tickets {
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		n, err := parseFixTicketIndex(id, prefix)
+		if err != nil {
+			continue
+		}
+		if n >= next {
+			next = n + 1
+		}
+	}
+	return next
+}
+
+func parseFixTicketIndex(ticketID, prefix string) (int, error) {
+	raw := strings.TrimPrefix(ticketID, prefix)
+	if raw == ticketID || raw == "" {
+		return 0, fmt.Errorf("invalid fix ticket id %q", ticketID)
+	}
+	var n int
+	if _, err := fmt.Sscanf(raw, "%d", &n); err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid fix ticket number in %q", ticketID)
+	}
+	if fmt.Sprintf("%d", n) != raw {
+		return 0, fmt.Errorf("invalid fix ticket suffix in %q", ticketID)
+	}
+	return n, nil
+}
+
+func (w *Watchdog) resolvePromptDir() string {
+	promptDir := w.config.Project.PromptDir
+	if filepath.IsAbs(promptDir) {
+		return promptDir
+	}
+	return filepath.Join(w.projectRoot(), promptDir)
+}
+
+func (w *Watchdog) autoCreateFixTickets(ticketID string) (int, error) {
+	if w == nil || w.tracker == nil || w.config == nil {
+		return 0, nil
+	}
+	src, ok := w.tracker.Get(ticketID)
+	if !ok {
+		return 0, nil
+	}
+	feature, reportName, ok := parseReviewSource(ticketID)
+	if !ok {
+		return 0, nil
+	}
+	reportPath := filepath.Join(w.projectRoot(), "swarm", "features", feature, reportName)
+	body, err := os.ReadFile(reportPath)
+	if err != nil {
+		return 0, fmt.Errorf("read findings report %s: %w", reportPath, err)
+	}
+
+	var report reviewReport
+	if err := json.Unmarshal(body, &report); err != nil {
+		return 0, fmt.Errorf("parse findings report %s: %w", reportPath, err)
+	}
+
+	actionable := make([]reviewFinding, 0)
+	for _, finding := range report.Findings {
+		if isActionableSeverity(finding.Severity) {
+			actionable = append(actionable, finding)
+		}
+	}
+	if len(actionable) == 0 {
+		return 0, nil
+	}
+
+	promptDir := w.resolvePromptDir()
+	if err := os.MkdirAll(promptDir, 0o755); err != nil {
+		return 0, fmt.Errorf("mkdir prompt dir %s: %w", promptDir, err)
+	}
+
+	next := w.nextFixIndex(feature)
+	created := 0
+	for _, finding := range actionable {
+		fixID := fmt.Sprintf("fix-%s-%d", feature, next)
+		next++
+		w.tracker.Tickets[fixID] = tracker.Ticket{
+			Status:  tracker.StatusTodo,
+			Phase:   src.Phase,
+			Depends: []string{ticketID},
+			Branch:  "feat/" + fixID,
+			Desc:    fixTicketDesc(finding),
+			Profile: "code-agent",
+		}
+
+		promptPath := filepath.Join(promptDir, fixID+".md")
+		prompt := buildFixPrompt(fixID, ticketID, finding)
+		if err := os.WriteFile(promptPath, []byte(prompt), 0o644); err != nil {
+			return created, fmt.Errorf("write fix prompt %s: %w", promptPath, err)
+		}
+		if err := w.appendEvent("fix_ticket_created", fixID, map[string]any{
+			"source_ticket": ticketID,
+			"severity":      strings.ToLower(strings.TrimSpace(finding.Severity)),
+		}); err != nil {
+			w.log("WARN: appendEvent(fix_ticket_created, %s): %v", fixID, err)
+		}
+		created++
+	}
+	return created, nil
+}
+
+func fixTicketDesc(finding reviewFinding) string {
+	title := strings.TrimSpace(finding.Title)
+	if title == "" {
+		title = "Review finding"
+	}
+	return fmt.Sprintf("Fix %s finding: %s", strings.ToLower(strings.TrimSpace(finding.Severity)), title)
+}
+
+func buildFixPrompt(fixID, sourceTicket string, finding reviewFinding) string {
+	var b strings.Builder
+	b.WriteString("# ")
+	b.WriteString(fixID)
+	b.WriteString("\n\n## Objective\n")
+	b.WriteString("Fix a blocking finding from ")
+	b.WriteString(sourceTicket)
+	b.WriteString(".\n\n## Finding\n")
+	b.WriteString("- Severity: ")
+	b.WriteString(strings.ToLower(strings.TrimSpace(finding.Severity)))
+	b.WriteString("\n")
+	if strings.TrimSpace(finding.Category) != "" {
+		b.WriteString("- Category: ")
+		b.WriteString(strings.TrimSpace(finding.Category))
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(finding.File) != "" {
+		b.WriteString("- File: ")
+		b.WriteString(strings.TrimSpace(finding.File))
+		if finding.Line > 0 {
+			b.WriteString(fmt.Sprintf(":%d", finding.Line))
+		}
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(finding.Title) != "" {
+		b.WriteString("- Title: ")
+		b.WriteString(strings.TrimSpace(finding.Title))
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(finding.Description) != "" {
+		b.WriteString("- Description: ")
+		b.WriteString(strings.TrimSpace(finding.Description))
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(finding.SuggestedFix) != "" {
+		b.WriteString("- Suggested fix: ")
+		b.WriteString(strings.TrimSpace(finding.SuggestedFix))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 
