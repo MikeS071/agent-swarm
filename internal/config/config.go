@@ -20,14 +20,15 @@ type Config struct {
 }
 
 type ProjectConfig struct {
-	Name       string `toml:"name"`
-	Repo       string `toml:"repo"`
-	BaseBranch string `toml:"base_branch"`
-	MaxAgents  int    `toml:"max_agents"`
-	MinRAMMB   int    `toml:"min_ram_mb"`
-	PromptDir  string `toml:"prompt_dir"`
-	Tracker     string `toml:"tracker"`
-	AutoApprove bool   `toml:"auto_approve"`
+	Name           string `toml:"name"`
+	Repo           string `toml:"repo"`
+	BaseBranch     string `toml:"base_branch"`
+	MaxAgents      int    `toml:"max_agents"`
+	MinRAMMB       int    `toml:"min_ram_mb"`
+	PromptDir      string `toml:"prompt_dir"`
+	Tracker        string `toml:"tracker"`
+	FeaturesDir    string `toml:"features_dir"`
+	AutoApprove    bool   `toml:"auto_approve"`
 	SpecFile       string `toml:"spec_file"`
 	DefaultProfile string `toml:"default_profile"`
 }
@@ -41,8 +42,8 @@ type BackendConfig struct {
 }
 
 type NotificationsConfig struct {
-	Type           string `toml:"type"`
-	TelegramChatID string `toml:"telegram_chat_id"`
+	Type             string `toml:"type"`
+	TelegramChatID   string `toml:"telegram_chat_id"`
 	TelegramToken    string `toml:"telegram_token"`
 	TelegramTokenCmd string `toml:"telegram_token_cmd"`
 }
@@ -74,13 +75,14 @@ type InstallConfig struct {
 func Default() *Config {
 	return &Config{
 		Project: ProjectConfig{
-			Name:       "myproject",
-			Repo:       ".",
-			BaseBranch: "main",
-			MaxAgents:  7,
-			MinRAMMB:   1024,
-			PromptDir:  "swarm/prompts",
-			Tracker:    "swarm/tracker.json",
+			Name:        "myproject",
+			Repo:        ".",
+			BaseBranch:  "main",
+			MaxAgents:   7,
+			MinRAMMB:    1024,
+			PromptDir:   "swarm/prompts",
+			Tracker:     "swarm/tracker.json",
+			FeaturesDir: "swarm/features",
 		},
 		Backend: BackendConfig{
 			Type:          "codex-tmux",
@@ -170,6 +172,9 @@ func validate(cfg *Config) error {
 	}
 	if strings.TrimSpace(cfg.Project.Tracker) == "" {
 		return fmt.Errorf("project.tracker is required")
+	}
+	if strings.TrimSpace(cfg.Project.FeaturesDir) == "" {
+		return fmt.Errorf("project.features_dir is required")
 	}
 	if cfg.Project.MaxAgents <= 0 {
 		return fmt.Errorf("project.max_agents must be > 0")
