@@ -517,6 +517,7 @@ func (w *Watchdog) projectRoot() string {
 func (w *Watchdog) assemblePrompt(tk tracker.Ticket, ticketPrompt []byte) []byte {
 	var parts [][]byte
 	root := w.projectRoot()
+	profileName := effectiveProfileName(tk, w.config.Project.DefaultProfile)
 
 	// Layer 1: AGENTS.md
 	agentsPath := filepath.Join(root, "AGENTS.md")
@@ -537,10 +538,6 @@ func (w *Watchdog) assemblePrompt(tk tracker.Ticket, ticketPrompt []byte) []byte
 	}
 
 	// Layer 3: profile (ticket-level overrides project default)
-	profileName := tk.Profile
-	if profileName == "" {
-		profileName = w.config.Project.DefaultProfile
-	}
 	if profileName != "" {
 		profilePath := filepath.Join(root, ".agents", "profiles", profileName+".md")
 		if data, err := os.ReadFile(profilePath); err == nil {
@@ -559,8 +556,59 @@ func (w *Watchdog) assemblePrompt(tk tracker.Ticket, ticketPrompt []byte) []byte
 	if data, err := os.ReadFile(footerPath); err == nil {
 		parts = append(parts, data)
 	}
+	if suffix := reviewOutputSuffix(profileName); len(suffix) > 0 {
+		parts = append(parts, suffix)
+	}
 
 	return joinParts(parts)
+}
+
+func effectiveProfileName(tk tracker.Ticket, defaultProfile string) string {
+	name := strings.TrimSpace(tk.Profile)
+	if name == "" {
+		name = strings.TrimSpace(defaultProfile)
+	}
+	return name
+}
+
+func reviewOutputSuffix(profileName string) []byte {
+	path := ""
+	switch strings.TrimSpace(profileName) {
+	case "code-reviewer":
+		path = "swarm/features/<feature>/review-report.json"
+	case "security-reviewer":
+		path = "swarm/features/<feature>/sec-report.json"
+	default:
+		return nil
+	}
+	return []byte(fmt.Sprintf(`## OUTPUT FORMAT (mandatory)
+
+You are a READ-ONLY reviewer. Do NOT modify any source files.
+
+Output your findings as a JSON file at %q.
+
+Use this exact schema:
+{
+  "findings": [
+    {
+      "severity": "critical|high|medium|low",
+      "category": "security|correctness|performance|style|documentation",
+      "file": "path/to/file",
+      "line": 42,
+      "title": "Short description",
+      "description": "What is wrong and why it matters",
+      "suggested_fix": "Specific action to take"
+    }
+  ],
+  "verdict": "BLOCK|WARN|PASS",
+  "summary": "N critical, N high, N medium findings"
+}
+
+Severity levels: critical, high, medium, low
+Verdict: BLOCK if any critical or high. WARN if only medium/low. PASS if clean.
+
+After writing the JSON, commit and push it.
+`, path))
 }
 
 // joinParts concatenates byte slices with double-newline separators.
