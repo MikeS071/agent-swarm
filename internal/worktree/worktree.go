@@ -111,9 +111,35 @@ func (m *Manager) HasCommits(ticketID, baseBranch string) (bool, string, error) 
 
 	logOut, err := m.git(wtPath, "log", fmt.Sprintf("%s..%s", baseBranch, branch), "--oneline")
 	if err != nil {
-		return false, "", err
+		// Local branch comparison failed — try fetching remote
+		logOut = ""
 	}
 	if strings.TrimSpace(logOut) == "" {
+		// Local branch has no commits ahead — check if agent pushed to remote
+		_, _ = m.git(wtPath, "fetch", "origin", branch)
+		remoteLog, remoteErr := m.git(wtPath, "log", fmt.Sprintf("%s..origin/%s", baseBranch, branch), "--oneline")
+		if remoteErr == nil && strings.TrimSpace(remoteLog) != "" {
+			sha, shaErr := m.git(wtPath, "rev-parse", "--short", "origin/"+branch)
+			if shaErr != nil {
+				return false, "", shaErr
+			}
+			return true, strings.TrimSpace(sha), nil
+		}
+		// Check for uncommitted work (untracked + modified files) — auto-rescue
+		statusOut, _ := m.git(wtPath, "status", "--porcelain")
+		if strings.TrimSpace(statusOut) != "" {
+			_, _ = m.git(wtPath, "add", "-A")
+			_, commitErr := m.git(wtPath, "commit", "-m", fmt.Sprintf("feat: auto-rescue uncommitted work for %s", ticketID))
+			if commitErr == nil {
+				_, pushErr := m.git(wtPath, "push", "origin", "HEAD:"+branch)
+				if pushErr == nil {
+					sha, shaErr := m.git(wtPath, "rev-parse", "--short", "HEAD")
+					if shaErr == nil {
+						return true, strings.TrimSpace(sha), nil
+					}
+				}
+			}
+		}
 		return false, "", nil
 	}
 
