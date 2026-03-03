@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -337,7 +338,7 @@ func (m model) renderList() string {
 	if m.config.Project.AutoApprove {
 		modeTag = "auto"
 	}
-	title := lipgloss.NewStyle().Bold(true).Render("agent-swarm — " + m.config.Project.Name + " [" + modeTag + "]")
+	title := lipgloss.NewStyle().Bold(true).Render("agent-swarm " + appVersion() + " — " + m.config.Project.Name + " [" + modeTag + "]")
 	b.WriteString(title + "\n")
 	b.WriteString(fmt.Sprintf("Progress: %s %d/%d (%d%%)\n", renderBarOnly(done, total, 24), done, total, pct))
 	b.WriteString(fmt.Sprintf("Phase: %d | Agents: %d/%d | RAM: %s\n", phase, stats.Running, m.config.Project.MaxAgents, ramText))
@@ -904,6 +905,15 @@ func absOrJoin(base, p string) string {
 		return p
 	}
 	return filepath.Join(base, p)
+}
+
+func appVersion() string {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		if v := strings.TrimSpace(bi.Main.Version); v != "" && v != "(devel)" {
+			return "v" + strings.TrimPrefix(v, "v")
+		}
+	}
+	return "vdev"
 }
 
 func maxInt(a, b int) int {
