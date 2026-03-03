@@ -19,8 +19,13 @@ import (
 
 type fakeBackend struct {
 	spawnCalls []backend.SpawnConfig
+	spawnOut   backend.AgentHandle
+	spawnErr   error
 	exited     map[string]bool
 	alive      map[string]bool
+	exitedSeen []backend.AgentHandle
+	aliveSeen  []backend.AgentHandle
+	name       string
 }
 
 type fakeSessionBackend struct {
@@ -31,6 +36,12 @@ type fakeSessionBackend struct {
 
 func (f *fakeBackend) Spawn(_ context.Context, cfg backend.SpawnConfig) (backend.AgentHandle, error) {
 	f.spawnCalls = append(f.spawnCalls, cfg)
+	if f.spawnErr != nil {
+		return backend.AgentHandle{}, f.spawnErr
+	}
+	if f.spawnOut.SessionName != "" {
+		return f.spawnOut, nil
+	}
 	session := "swarm-" + cfg.TicketID
 	if f.alive == nil {
 		f.alive = map[string]bool{}
@@ -40,6 +51,7 @@ func (f *fakeBackend) Spawn(_ context.Context, cfg backend.SpawnConfig) (backend
 }
 
 func (f *fakeBackend) IsAlive(h backend.AgentHandle) bool {
+	f.aliveSeen = append(f.aliveSeen, h)
 	if f.alive == nil {
 		return false
 	}
@@ -47,6 +59,7 @@ func (f *fakeBackend) IsAlive(h backend.AgentHandle) bool {
 }
 
 func (f *fakeBackend) HasExited(h backend.AgentHandle) bool {
+	f.exitedSeen = append(f.exitedSeen, h)
 	if f.exited == nil {
 		return false
 	}
@@ -55,7 +68,12 @@ func (f *fakeBackend) HasExited(h backend.AgentHandle) bool {
 
 func (f *fakeBackend) GetOutput(backend.AgentHandle, int) (string, error) { return "", nil }
 func (f *fakeBackend) Kill(backend.AgentHandle) error                     { return nil }
-func (f *fakeBackend) Name() string                                       { return "fake" }
+func (f *fakeBackend) Name() string {
+	if f.name != "" {
+		return f.name
+	}
+	return "fake"
+}
 
 func (f *fakeSessionBackend) ListSessions(context.Context) ([]string, error) {
 	return f.sessions, f.err
