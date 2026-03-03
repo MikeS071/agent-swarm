@@ -64,6 +64,9 @@ swarm status [--project NAME] [--json] [--compact] [--watch] [--live]
 swarm watch [--interval 5m] [--once] [--dry-run]
   Run watchdog daemon or a single pass
 
+swarm notify reset-completion
+  Clear completion marker so the next ALL_DONE can notify once again
+
 swarm go
   Approve the current phase gate
 
@@ -109,6 +112,7 @@ max_agents = 7
 min_ram_mb = 1024
 prompt_dir = "swarm/prompts"
 tracker = "swarm/tracker.json"
+features_dir = "swarm/features"
 auto_approve = false
 spec_file = ""
 default_profile = ""
@@ -189,4 +193,19 @@ For lifecycle-oriented v2 design notes and planned `feature` command set, see `d
 go test ./... -count=1
 go build ./...
 go vet ./...
+```
+
+
+## Multi-project watchdog (recommended in OpenClaw)
+
+For OpenClaw environments running multiple swarm projects, run a single timer that calls `swarm watch --once` per project config.
+
+- dedupe by `swarm.toml` realpath (avoid duplicate runs for aliases)
+- keep each pass short (`--once`)
+- rely on completion marker (`swarm/.completion-notified`) to avoid duplicate ALL_DONE alerts
+
+If needed, reset completion notifications manually:
+
+```bash
+swarm notify reset-completion
 ```

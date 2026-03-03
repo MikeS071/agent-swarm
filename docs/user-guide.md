@@ -238,3 +238,32 @@ Each ticket runs in `<repo>-worktrees/<ticket-id>` on its own branch (default `f
 ## Notes on Feature Lifecycle Commands
 
 The repository includes v2 lifecycle design docs in `docs/AGENT-SWARM-V2-SPEC.md` (feature-state machine and specialist profile flows). The currently implemented CLI command set is the one shown in this guide.
+
+
+### 12. Reset completion notifications
+
+When a project reaches `ALL_DONE`, completion notifications are deduped using `swarm/.completion-notified`.
+
+If you intentionally want a new completion notification on next pass:
+
+```bash
+swarm notify reset-completion
+```
+
+This only removes the marker for the current project config.
+
+
+### 13. Multi-project watchdog
+
+For OpenClaw setups with multiple repos, prefer a multi-project timer that runs:
+
+```bash
+swarm --config <repo>/swarm.toml watch --once
+```
+
+for each registered project on a short interval (e.g. 1m).
+
+Best practice:
+- dedupe by resolved `swarm.toml` path
+- skip repos without `swarm.toml`
+- let per-project completion marker prevent repeated ALL_DONE notifications
