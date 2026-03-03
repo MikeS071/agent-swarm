@@ -581,10 +581,17 @@ func loadProject(p projectContext) (*config.Config, *tracker.Tracker, error) {
 }
 
 func newBackend(cfg *config.Config) backend.AgentBackend {
-	if cfg != nil && cfg.Backend.Type == "codex-tmux" {
-		return backend.NewCodexBackend(cfg.Backend.Binary, cfg.Backend.BypassSandbox)
+	if cfg == nil {
+		return &noopBackend{}
 	}
-	return &noopBackend{}
+	b, err := backend.Build(cfg.Backend.Type, backend.BuildOptions{
+		Binary:        cfg.Backend.Binary,
+		BypassSandbox: cfg.Backend.BypassSandbox,
+	})
+	if err != nil {
+		return &noopBackend{}
+	}
+	return b
 }
 
 func (m *model) toggleAutoApprove() {
