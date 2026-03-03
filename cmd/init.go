@@ -30,6 +30,9 @@ func init() {
 func scaffoldProject(project string) error {
 	root := project
 	projectName := filepath.Base(filepath.Clean(project))
+	if absRoot, err := filepath.Abs(root); err == nil {
+		projectName = filepath.Base(absRoot)
+	}
 
 	// Create swarm directories
 	dirs := []string{
