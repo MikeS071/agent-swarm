@@ -12,7 +12,7 @@ Hard-won operational knowledge from running 60+ agent tickets across multiple pr
 
 ### What kills agents
 - **Bloated prompt footers** with multi-phase ceremony — agents spend all their time on process instead of output
-- **Decapod/governance commands that fail** — agents try to fix pre-existing failures instead of ignoring them
+- **Governance commands that fail** — agents try to fix pre-existing failures instead of ignoring them
 - **Vague scope** — "write tests for the admin module" vs "write tests for `src/app/api/admin/provision/route.ts`"
 - **Broad review instructions** — "review the codebase for issues" causes destructive overreach
 
@@ -103,10 +103,10 @@ When an agent fails but wrote useful code:
 - Trusted pipelines where phase review adds no value
 - NOT for feature work where phase N builds on phase N-1 output
 
-## Decapod Integration
+## Governance Validation Integration
 
 ### Current state
-- `decapod validate` runs in agent worktrees but reports ~25 pre-existing invariant failures
+- Validation commands often run in agent worktrees but report pre-existing invariant failures
 - Agents capture `validation_output.json` at start (baseline) and end (post-work)
 - The validation artifact is committed with agent work for orchestrator review
 - No new failures = agent passed governance gate
@@ -114,10 +114,9 @@ When an agent fails but wrote useful code:
 
 ### Footer pattern
 ```
-### Phase 0: Decapod governance
+### Phase 0: Governance validation
 Run once at start — capture validation state:
-  export PATH="$HOME/.cargo/bin:$PATH"
-  decapod validate --format json > validation_output.json 2>&1
+  <governance-validate-command> > validation_output.json 2>&1
 
 Review validation_output.json. If there are failures:
 - Distinguish PRE-EXISTING failures from NEW failures

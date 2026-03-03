@@ -242,7 +242,7 @@ See [lessons-learned.md](lessons-learned.md) for hard-won operational knowledge 
 - Watchdog failure modes and fixes
 - Common agent behaviour patterns and recovery workflows
 - Scaling configurations
-- Decapod governance integration
+- Governance validation integration
 
 ## Standard Phase Flow
 

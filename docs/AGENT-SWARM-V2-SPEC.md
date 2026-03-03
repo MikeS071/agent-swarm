@@ -10,7 +10,7 @@ Transform `agent-swarm` from a ticket executor into a **feature-driven developme
 2. **Separate sessions per specialist** — Each agent profile runs in its own Codex tmux session with the right model.
 3. **Always all 7 post-build tickets** — No exceptions, no tiers. Every feature gets the full pipeline.
 4. **Auto-fix critical/high, report medium/low** — Review findings create fix tickets for critical/high severity. Medium/low reported to human.
-5. **No Decapod** — Removed entirely. TDD enforcement via prompt-footer + tool validation.
+5. **No external governance dependency** — TDD enforcement via prompt-footer + tool validation.
 
 ---
 
@@ -177,7 +177,7 @@ Every ticket prompt is assembled from layers:
 [3] Feature context     — prd.md + spec.md + arch-review.md (if exists)
 [4] Profile content     — agent profile markdown (architect.md, tdd-guide.md, etc.)
 [5] Ticket description  — from tracker.json `desc` field
-[6] Prompt footer       — mandatory TDD process (current prompt-footer.md, minus Decapod)
+[6] Prompt footer       — mandatory TDD process (current prompt-footer.md, minus legacy governance preflight)
 [7] Conflict zones      — list of directories/files other agents are touching (parallel safety)
 ```
 
@@ -194,7 +194,7 @@ When `agent-swarm watch` encounters a ticket with no prompt file:
 6. Assemble prompt from layers above
 7. Save to `swarm/prompts/<ticket-id>.md`
 
-### 4.3 Prompt Footer (Updated — No Decapod)
+### 4.3 Prompt Footer (Updated)
 
 ```markdown
 ---
@@ -472,19 +472,18 @@ Ticket schema gains optional fields:
 
 ---
 
-## 8. Decapod Removal
+## 8. Legacy Governance Cleanup
 
 ### Files to Remove
-- `~/.cargo/bin/decapod` (binary)
-- `~/.openclaw/workspace/templates/AGENTS.md` — rewrite without Decapod commands
-- All `.decapod/` directories in projects
-- All `CODEX.md` files referencing Decapod
-- Decapod sections from `swarm/prompt-footer.md`
+- Legacy governance binaries no longer required by this workflow
+- Legacy governance cache directories in projects
+- Legacy-governance sections from `CODEX.md` files
+- Legacy-governance sections from `swarm/prompt-footer.md`
 
 ### Files to Update
-- `~/.openclaw/workspace/templates/AGENTS.md` → keep TDD + Karpathy + Git hygiene, remove Decapod governance
+- `~/.openclaw/workspace/templates/AGENTS.md` → keep TDD + Karpathy + Git hygiene, remove legacy governance steps
 - All project `AGENTS.md` files → regenerate from updated template
-- `swarm/prompt-footer.md` → remove Phase 0 (Decapod validate)
+- `swarm/prompt-footer.md` → remove external-governance Phase 0 validation step
 
 ---
 
@@ -495,7 +494,7 @@ Ticket schema gains optional fields:
 2. Add `type`, `feature`, `profile` fields to tracker schema
 3. Add `[profiles]` and `[post_build]` config sections
 4. Update prompt auto-generation to use profiles + feature context
-5. Remove Decapod from prompt-footer
+5. Remove external-governance preflight from prompt-footer
 6. Add `validate` command
 
 ### Phase 2: Post-Build Automation
@@ -509,7 +508,7 @@ Ticket schema gains optional fields:
 12. Separate tmux sessions with different backends
 
 ### Phase 4: Cleanup
-13. Remove Decapod from all projects
+13. Remove legacy governance references from all projects
 14. Update AGENTS.md template
 15. Update workspace docs (AGENTS.md, SOUL.md references)
 16. Archive old workflow files (WORKFLOW_AUTO.md, sprint.json)
