@@ -97,10 +97,10 @@ type Watchdog struct {
 	notifier   notify.Notifier
 	events     *EventLog
 
-	dryRun      bool
-	retries     map[string]int
-	spawnErrors map[string]int
-	stuckAlerts map[string]bool
+	dryRun         bool
+	retries        map[string]int
+	spawnErrors    map[string]int
+	stuckAlerts    map[string]bool
 	gateNoticed    bool
 	completionSent bool
 	logger         *log.Logger
@@ -496,11 +496,11 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	}
 
 	handle, err := w.backend.Spawn(ctx, backend.SpawnConfig{
-		TicketID:   ticketID,
-		Branch:     branch,
-		WorkDir:    workDir,
-		PromptFile: promptPath,
-		Model:      w.config.Backend.Model,
+		TicketID:    ticketID,
+		Branch:      branch,
+		WorkDir:     workDir,
+		PromptFile:  promptPath,
+		Model:       w.config.Backend.Model,
 		Effort:      w.config.Backend.Effort,
 		ProjectName: w.config.Project.Name,
 	})
@@ -776,7 +776,6 @@ func buildFixPrompt(fixID, sourceTicket string, finding reviewFinding) string {
 	}
 	return b.String()
 }
-
 
 func (w *Watchdog) appendEvent(eventType, ticketID string, data map[string]any) error {
 	if w.events == nil || w.dryRun {
