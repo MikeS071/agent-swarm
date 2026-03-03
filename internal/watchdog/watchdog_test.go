@@ -1109,3 +1109,74 @@ func TestRunOnceReviewDoneFixNumberingContinuesFromExisting(t *testing.T) {
 		t.Fatalf("expected fix-cache-3 ticket")
 	}
 }
+
+func TestAssemblePromptReviewOutputSuffix(t *testing.T) {
+	tests := []struct {
+		name           string
+		ticketProfile  string
+		defaultProfile string
+		wantSuffix     bool
+		wantPath       string
+	}{
+		{
+			name:          "code reviewer ticket profile",
+			ticketProfile: "code-reviewer",
+			wantSuffix:    true,
+			wantPath:      "swarm/features/<feature>/review-report.json",
+		},
+		{
+			name:          "security reviewer ticket profile",
+			ticketProfile: "security-reviewer",
+			wantSuffix:    true,
+			wantPath:      "swarm/features/<feature>/sec-report.json",
+		},
+		{
+			name:          "non-review profile",
+			ticketProfile: "code-agent",
+			wantSuffix:    false,
+		},
+		{
+			name:           "default security reviewer profile",
+			defaultProfile: "security-reviewer",
+			wantSuffix:     true,
+			wantPath:       "swarm/features/<feature>/sec-report.json",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(tmp, "swarm", "prompts"), 0o755); err != nil {
+				t.Fatalf("mkdir prompts: %v", err)
+			}
+
+			cfg := &config.Config{
+				Project: config.ProjectConfig{
+					Name:           "test",
+					Tracker:        filepath.Join(tmp, "swarm", "tracker.json"),
+					PromptDir:      filepath.Join(tmp, "swarm", "prompts"),
+					DefaultProfile: tc.defaultProfile,
+				},
+			}
+			w := &Watchdog{config: cfg}
+
+			out := string(w.assemblePrompt(tracker.Ticket{Profile: tc.ticketProfile}, []byte("task")))
+
+			hasHeader := strings.Contains(out, "## OUTPUT FORMAT (mandatory)")
+			if hasHeader != tc.wantSuffix {
+				t.Fatalf("suffix header present=%v want %v\noutput:\n%s", hasHeader, tc.wantSuffix, out)
+			}
+
+			if tc.wantSuffix {
+				if !strings.Contains(out, tc.wantPath) {
+					t.Fatalf("missing expected report path %q\noutput:\n%s", tc.wantPath, out)
+				}
+				if !strings.Contains(out, "\"findings\"") || !strings.Contains(out, "\"verdict\"") || !strings.Contains(out, "\"summary\"") {
+					t.Fatalf("missing structured findings contract fields\noutput:\n%s", out)
+				}
+			} else if strings.Contains(out, "review-report.json") || strings.Contains(out, "sec-report.json") {
+				t.Fatalf("unexpected review/security report path in non-review prompt\noutput:\n%s", out)
+			}
+		})
+	}
+}
