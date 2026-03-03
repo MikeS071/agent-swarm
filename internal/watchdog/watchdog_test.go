@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -267,6 +268,242 @@ func TestRunOncePhaseGateBlocksSpawning(t *testing.T) {
 	}
 }
 
+func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"cch-01": {Status: tracker.StatusDone, Phase: 2, Branch: "feat/cch-01"},
+		"cch-02": {Status: tracker.StatusDone, Phase: 2, Branch: "feat/cch-02"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+		PostBuild: config.PostBuildConfig{
+			Order: []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			ParallelGroups: [][]string{
+				{"gap", "tst"},
+				{"review", "sec"},
+				{"doc", "clean"},
+			},
+		},
+	}
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	tests := []struct {
+		id       string
+		status   string
+		depends  []string
+		profile  string
+		ticketTy string
+	}{
+		{id: "int-cch", status: tracker.StatusRunning, depends: []string{"cch-01", "cch-02"}, ticketTy: "int"},
+		{id: "gap-cch", status: tracker.StatusTodo, depends: []string{"int-cch"}, profile: "code-reviewer", ticketTy: "gap"},
+		{id: "tst-cch", status: tracker.StatusTodo, depends: []string{"int-cch"}, profile: "e2e-runner", ticketTy: "tst"},
+		{id: "review-cch", status: tracker.StatusTodo, depends: []string{"gap-cch", "tst-cch"}, profile: "code-reviewer", ticketTy: "review"},
+		{id: "sec-cch", status: tracker.StatusTodo, depends: []string{"gap-cch", "tst-cch"}, profile: "security-reviewer", ticketTy: "sec"},
+		{id: "doc-cch", status: tracker.StatusTodo, depends: []string{"review-cch", "sec-cch"}, profile: "doc-updater", ticketTy: "doc"},
+		{id: "clean-cch", status: tracker.StatusTodo, depends: []string{"review-cch", "sec-cch"}, profile: "refactor-cleaner", ticketTy: "clean"},
+		{id: "mem-cch", status: tracker.StatusTodo, depends: []string{"clean-cch", "doc-cch"}, profile: "code-reviewer", ticketTy: "mem"},
+	}
+
+	for _, tc := range tests {
+		tk, ok := tr.Tickets[tc.id]
+		if !ok {
+			t.Fatalf("expected ticket %s to be auto-created", tc.id)
+		}
+		if tk.Status != tc.status {
+			t.Fatalf("%s status = %q, want %q", tc.id, tk.Status, tc.status)
+		}
+		if tk.Phase != 2 {
+			t.Fatalf("%s phase = %d, want 2", tc.id, tk.Phase)
+		}
+		if tk.Feature != "cch" {
+			t.Fatalf("%s feature = %q, want cch", tc.id, tk.Feature)
+		}
+		if tk.Type != tc.ticketTy {
+			t.Fatalf("%s type = %q, want %q", tc.id, tk.Type, tc.ticketTy)
+		}
+		if tk.Profile != tc.profile {
+			t.Fatalf("%s profile = %q, want %q", tc.id, tk.Profile, tc.profile)
+		}
+		assertSameDeps(t, tc.id, tk.Depends, tc.depends)
+	}
+
+	if len(be.spawnCalls) != 1 || be.spawnCalls[0].TicketID != "int-cch" {
+		t.Fatalf("expected one spawn for int-cch, got %#v", be.spawnCalls)
+	}
+}
+
+func TestRunOncePostBuildAutoCreationDisabledByDefault(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"cch-01": {Status: tracker.StatusDone, Phase: 1, Branch: "feat/cch-01"},
+		"cch-02": {Status: tracker.StatusDone, Phase: 1, Branch: "feat/cch-02"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  filepath.Join(t.TempDir(), "prompts"),
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if _, ok := tr.Tickets["int-cch"]; ok {
+		t.Fatalf("did not expect int-cch without post_build config")
+	}
+	if len(be.spawnCalls) != 0 {
+		t.Fatalf("expected no spawns, got %#v", be.spawnCalls)
+	}
+}
+
+func TestRunOncePostBuildAutoCreationIsIdempotent(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"cch-01": {Status: tracker.StatusDone, Phase: 3, Branch: "feat/cch-01"},
+		"cch-02": {Status: tracker.StatusDone, Phase: 3, Branch: "feat/cch-02"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+		PostBuild: config.PostBuildConfig{
+			Order: []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			ParallelGroups: [][]string{
+				{"gap", "tst"},
+				{"review", "sec"},
+				{"doc", "clean"},
+			},
+		},
+	}
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("first run once: %v", err)
+	}
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("second run once: %v", err)
+	}
+
+	if len(tr.Tickets) != 10 {
+		t.Fatalf("ticket count = %d, want 10", len(tr.Tickets))
+	}
+	if len(be.spawnCalls) != 1 {
+		t.Fatalf("expected one spawn across both passes, got %d", len(be.spawnCalls))
+	}
+}
+
+func TestRunOncePostBuildAutoCreationDryRunNoMutation(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"cch-01": {Status: tracker.StatusDone, Phase: 2, Branch: "feat/cch-01"},
+		"cch-02": {Status: tracker.StatusDone, Phase: 2, Branch: "feat/cch-02"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+		PostBuild: config.PostBuildConfig{
+			Order: []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			ParallelGroups: [][]string{
+				{"gap", "tst"},
+				{"review", "sec"},
+				{"doc", "clean"},
+			},
+		},
+	}
+
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+	w.SetDryRun(true)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if len(tr.Tickets) != 2 {
+		t.Fatalf("dry-run mutated tracker: ticket count = %d, want 2", len(tr.Tickets))
+	}
+	if _, ok := tr.Tickets["int-cch"]; ok {
+		t.Fatalf("dry-run should not create post-build tickets")
+	}
+	if len(be.spawnCalls) != 0 {
+		t.Fatalf("dry-run should not spawn tickets, got %#v", be.spawnCalls)
+	}
+}
+
 func TestEventLogAppendJSONL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	log := NewEventLog(path)
@@ -328,6 +565,51 @@ func TestRunningAgentCountUsesSessionLister(t *testing.T) {
 	}
 }
 
+func TestBuildPostBuildStages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		order          []string
+		parallelGroups [][]string
+		want           [][]string
+	}{
+		{
+			name:           "contiguous groups form parallel stages",
+			order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			parallelGroups: [][]string{{"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}},
+			want:           [][]string{{"int"}, {"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}, {"mem"}},
+		},
+		{
+			name:           "non contiguous groups are ignored",
+			order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			parallelGroups: [][]string{{"gap", "review"}},
+			want:           [][]string{{"int"}, {"gap"}, {"tst"}, {"review"}, {"sec"}, {"doc"}, {"clean"}, {"mem"}},
+		},
+		{
+			name:           "overlapping groups are ignored after first valid group",
+			order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			parallelGroups: [][]string{{"gap", "tst"}, {"tst", "review"}},
+			want:           [][]string{{"int"}, {"gap", "tst"}, {"review"}, {"sec"}, {"doc"}, {"clean"}, {"mem"}},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildPostBuildStages(tc.order, tc.parallelGroups)
+			if len(got) != len(tc.want) {
+				t.Fatalf("stage count = %d, want %d (got=%v)", len(got), len(tc.want), got)
+			}
+			for i := range tc.want {
+				if strings.Join(got[i], ",") != strings.Join(tc.want[i], ",") {
+					t.Fatalf("stage %d = %v, want %v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 func initRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
@@ -358,6 +640,17 @@ func writeFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func assertSameDeps(t *testing.T, ticketID string, got, want []string) {
+	t.Helper()
+	gotCopy := append([]string(nil), got...)
+	wantCopy := append([]string(nil), want...)
+	sort.Strings(gotCopy)
+	sort.Strings(wantCopy)
+	if strings.Join(gotCopy, ",") != strings.Join(wantCopy, ",") {
+		t.Fatalf("%s deps = %v, want %v", ticketID, gotCopy, wantCopy)
 	}
 }
 
