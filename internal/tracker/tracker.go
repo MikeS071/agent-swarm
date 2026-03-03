@@ -10,8 +10,8 @@ import (
 )
 
 type Tracker struct {
-	Project string            `json:"project"`
-	Tickets map[string]Ticket `json:"tickets"`
+	Project       string            `json:"project"`
+	Tickets       map[string]Ticket `json:"tickets"`
 	UnlockedPhase int               `json:"unlocked_phase,omitempty"`
 	filePath      string            `json:"-"`
 }
@@ -20,6 +20,8 @@ type Ticket struct {
 	Status     string   `json:"status"`
 	Phase      int      `json:"phase"`
 	Depends    []string `json:"depends"`
+	Type       string   `json:"type,omitempty"`
+	Feature    string   `json:"feature,omitempty"`
 	Branch     string   `json:"branch,omitempty"`
 	Desc       string   `json:"desc,omitempty"`
 	Profile    string   `json:"profile,omitempty"`
