@@ -95,14 +95,14 @@ Stored in `swarm/features/<name>/feature.json`:
 
 | Profile | Model | Mode | Read-Only? |
 |---------|-------|------|------------|
-| `architect` | claude-sonnet-4-6 | Research | Yes — outputs ADR, never writes code |
-| `planner` | claude-sonnet-4-6 | Research | Yes — outputs ticket breakdown |
+| `architect` | claude-opus-4-6 | Research | Yes — outputs ADR, never writes code |
+| `planner` | claude-opus-4-6 | Research | Yes — outputs ticket breakdown |
 | `code-agent` + `tdd-guide` | gpt-5.3-codex | Development | No — writes tests + code |
 | `code-reviewer` | claude-sonnet-4-6 | Review | Yes — outputs findings JSON |
 | `security-reviewer` | claude-sonnet-4-6 | Review | Yes — outputs findings JSON |
 | `e2e-runner` | gpt-5.3-codex | Development | No — writes + runs tests |
-| `doc-updater` | gpt-5.3-codex | Development | No — writes docs |
-| `refactor-cleaner` | gpt-5.3-codex | Development | No — modifies code |
+| `doc-updater` | gpt-5.2 | Development | No — writes docs |
+| `refactor-cleaner` | gpt-4.1 | Development | No — modifies code |
 | `build-error-resolver` | gpt-5.3-codex | Development | No — fixes build errors |
 
 ### 3.2 Ticket Type System
@@ -302,10 +302,55 @@ agent-swarm validate
 # - Profile files exist for all ticket types
 ```
 
-### 5.3 Existing Commands (unchanged)
+### 5.3 Project Init (updated)
 
 ```bash
-agent-swarm init           # Initialize swarm in a project
+agent-swarm init <project>
+```
+
+Creates a fully self-contained project scaffold:
+```
+<project>/
+  AGENTS.md                    # Standard agent contract (embedded in binary)
+  swarm.toml                   # Swarm configuration
+  swarm/
+    tracker.json               # Empty ticket tracker
+    prompts/                   # Per-ticket prompts
+    features/                  # Feature lifecycle directories
+    logs/                      # Agent output logs
+  .agents/
+    skills/                    # ECC skills (56 skills from everything-claude-code)
+    profiles/                  # Specialist agent profiles (10 profiles)
+  .codex/
+    rules/                     # Coding rules per language (common, golang, python, typescript, swift)
+```
+
+All assets are **embedded in the binary** via `go:embed` — no external dependencies.
+
+### 5.4 Ticket ID Format
+
+Ticket IDs use a short `<prefix>-<NN>` pattern:
+
+| Type | Pattern | Example |
+|------|---------|---------|
+| Feature | `<feat>-NN` | `cch-01`, `cch-02` (cache feature) |
+| Architecture Review | `arc-<feat>` | `arc-cch` |
+| Integration | `int-<feat>` | `int-cch` |
+| Gap Assessment | `gap-<feat>` | `gap-cch` |
+| E2E Test | `tst-<feat>` | `tst-cch` |
+| Code Review | `rev-<feat>` | `rev-cch` |
+| Security Review | `sec-<feat>` | `sec-cch` |
+| Documentation | `doc-<feat>` | `doc-cch` |
+| Cleanup | `cln-<feat>` | `cln-cch` |
+| Lessons Learned | `mem-<feat>` | `mem-cch` |
+| Fix | `fix-<feat>-NN` | `fix-cch-01` |
+
+Feature prefix is a 3-letter abbreviation chosen at `feature add` time.
+
+### 5.5 Existing Commands (unchanged)
+
+```bash
+agent-swarm init <project>   # Initialize swarm in a project (updated — see above)
 agent-swarm watch          # Start watchdog (spawns agents)
 agent-swarm status         # Show tracker state
 agent-swarm tui            # Interactive TUI

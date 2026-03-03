@@ -370,7 +370,7 @@ func renderTicketRow(row ticketRow, selected bool, compact bool, width int) stri
 	if len(desc) > maxDesc {
 		desc = desc[:maxDesc-1] + "…"
 	}
-	line := fmt.Sprintf("%s %-8s P%d %-*s", icon, row.ID, row.Phase, maxDesc, desc)
+	line := fmt.Sprintf("%s %-12s P%d %-*s", icon, row.ID, row.Phase, maxDesc, desc)
 	if compact {
 		line = fmt.Sprintf("%s %s", line, styleForStatus(status).Render(label))
 	} else {

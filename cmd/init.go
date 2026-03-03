@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -13,7 +15,7 @@ import (
 
 var initCmd = &cobra.Command{
 	Use:   "init <project>",
-	Short: "Scaffold project swarm files",
+	Short: "Scaffold project swarm files with standard assets",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		project := args[0]
@@ -28,13 +30,25 @@ func init() {
 func scaffoldProject(project string) error {
 	root := project
 	projectName := filepath.Base(filepath.Clean(project))
-	if err := os.MkdirAll(filepath.Join(root, "swarm", "prompts"), 0o755); err != nil {
-		return fmt.Errorf("create directories: %w", err)
+
+	// Create swarm directories
+	dirs := []string{
+		filepath.Join(root, "swarm", "prompts"),
+		filepath.Join(root, "swarm", "features"),
+		filepath.Join(root, "swarm", "logs"),
+		filepath.Join(root, ".agents", "skills"),
+		filepath.Join(root, ".agents", "profiles"),
+		filepath.Join(root, ".codex", "rules"),
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("create directory %s: %w", d, err)
+		}
 	}
 
+	// Write swarm.toml
 	cfg := config.Default()
 	cfg.Project.Name = projectName
-
 	cfgBytes, err := toml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
@@ -47,6 +61,7 @@ func scaffoldProject(project string) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 
+	// Write empty tracker
 	tr := &tracker.Tracker{
 		Project: projectName,
 		Tickets: map[string]tracker.Ticket{},
@@ -56,5 +71,83 @@ func scaffoldProject(project string) error {
 		return err
 	}
 
+	// Copy embedded assets
+	copied := 0
+
+	// AGENTS.md
+	n, err := copyEmbedDir(assets, "assets/AGENTS.md", root)
+	if err != nil {
+		return fmt.Errorf("copy AGENTS.md: %w", err)
+	}
+	copied += n
+
+	// Skills
+	n, err = copyEmbedTree(assets, "assets/skills", filepath.Join(root, ".agents", "skills"))
+	if err != nil {
+		return fmt.Errorf("copy skills: %w", err)
+	}
+	copied += n
+
+	// Profiles
+	n, err = copyEmbedTree(assets, "assets/profiles", filepath.Join(root, ".agents", "profiles"))
+	if err != nil {
+		return fmt.Errorf("copy profiles: %w", err)
+	}
+	copied += n
+
+	// Rules
+	n, err = copyEmbedTree(assets, "assets/rules", filepath.Join(root, ".codex", "rules"))
+	if err != nil {
+		return fmt.Errorf("copy rules: %w", err)
+	}
+	copied += n
+
+	fmt.Printf("✅ Initialized %s\n", projectName)
+	fmt.Printf("   swarm.toml + tracker.json\n")
+	fmt.Printf("   %d asset files (AGENTS.md, skills, profiles, rules)\n", copied)
+	fmt.Printf("   swarm/features/ — feature lifecycle directory\n")
 	return nil
+}
+
+// copyEmbedDir copies a single embedded file to destDir preserving filename.
+func copyEmbedDir(fsys embed.FS, src string, destDir string) (int, error) {
+	data, err := fsys.ReadFile(src)
+	if err != nil {
+		return 0, err
+	}
+	name := filepath.Base(src)
+	dest := filepath.Join(destDir, name)
+	if _, err := os.Stat(dest); err == nil {
+		return 0, nil // skip existing
+	}
+	return 1, os.WriteFile(dest, data, 0o644)
+}
+
+// copyEmbedTree copies an embedded directory tree to destDir.
+func copyEmbedTree(fsys embed.FS, srcDir string, destDir string) (int, error) {
+	count := 0
+	err := fs.WalkDir(fsys, srcDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(srcDir, path)
+		target := filepath.Join(destDir, rel)
+
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+
+		// Skip if exists
+		if _, err := os.Stat(target); err == nil {
+			return nil
+		}
+
+		data, err := fsys.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		count++
+		return os.WriteFile(target, data, 0o644)
+	})
+	return count, err
 }
