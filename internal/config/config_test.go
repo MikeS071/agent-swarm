@@ -123,3 +123,42 @@ type = "stdout"
 		t.Fatal("expected error for missing required project.name")
 	}
 }
+
+func TestLoadPostBuildConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeFile(t, dir, "swarm.toml", `
+[project]
+name = "myproject"
+
+[backend]
+type = "codex-tmux"
+
+[notifications]
+type = "stdout"
+
+[watchdog]
+
+[post_build]
+order = ["int", "gap", "tst", "review", "sec", "doc", "clean", "mem"]
+parallel_groups = [["gap", "tst"], ["review", "sec"], ["doc", "clean"]]
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if len(cfg.PostBuild.Order) != 8 {
+		t.Fatalf("expected 8 post_build order entries, got %d", len(cfg.PostBuild.Order))
+	}
+	if got := cfg.PostBuild.Order[0]; got != "int" {
+		t.Fatalf("expected first post_build order int, got %q", got)
+	}
+	if len(cfg.PostBuild.ParallelGroups) != 3 {
+		t.Fatalf("expected 3 parallel groups, got %d", len(cfg.PostBuild.ParallelGroups))
+	}
+	if got := cfg.PostBuild.ParallelGroups[0][0]; got != "gap" {
+		t.Fatalf("expected first parallel group to start with gap, got %q", got)
+	}
+}

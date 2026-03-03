@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -83,10 +84,10 @@ type Watchdog struct {
 	notifier   notify.Notifier
 	events     *EventLog
 
-	dryRun      bool
-	retries     map[string]int
-	spawnErrors map[string]int
-	stuckAlerts map[string]bool
+	dryRun         bool
+	retries        map[string]int
+	spawnErrors    map[string]int
+	stuckAlerts    map[string]bool
 	gateNoticed    bool
 	completionSent bool
 	logger         *log.Logger
@@ -291,6 +292,10 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		}
 	}
 
+	if err := w.ensurePostBuildTickets(ctx); err != nil {
+		w.log("WARN: ensurePostBuildTickets: %v", err)
+	}
+
 	runningCount, err := w.runningAgentCount(ctx)
 	if err != nil {
 		w.log("WARN: runningAgentCount: %v — assuming 0", err)
@@ -477,11 +482,11 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	}
 
 	handle, err := w.backend.Spawn(ctx, backend.SpawnConfig{
-		TicketID:   ticketID,
-		Branch:     branch,
-		WorkDir:    workDir,
-		PromptFile: promptPath,
-		Model:      w.config.Backend.Model,
+		TicketID:    ticketID,
+		Branch:      branch,
+		WorkDir:     workDir,
+		PromptFile:  promptPath,
+		Model:       w.config.Backend.Model,
 		Effort:      w.config.Backend.Effort,
 		ProjectName: w.config.Project.Name,
 	})
@@ -579,7 +584,6 @@ func joinParts(parts [][]byte) []byte {
 	}
 	return buf
 }
-
 
 func (w *Watchdog) appendEvent(eventType, ticketID string, data map[string]any) error {
 	if w.events == nil || w.dryRun {
@@ -679,4 +683,389 @@ func parseTimestamp(v string) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+type buildFeatureStatus struct {
+	BuildIDs          []string
+	BuildDone         int
+	BuildTotal        int
+	MaxBuildPhase     int
+	PostBuildStepsSet map[string]bool
+}
+
+func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
+	order, parallelGroups, enabled := w.postBuildPlan()
+	if !enabled || w.tracker == nil {
+		return nil
+	}
+
+	features := w.collectBuildFeatureStatus(order)
+	if len(features) == 0 {
+		return nil
+	}
+
+	featureNames := make([]string, 0, len(features))
+	for feature, fs := range features {
+		if fs.BuildTotal == 0 || fs.BuildDone != fs.BuildTotal {
+			continue
+		}
+		missing := false
+		for _, step := range order {
+			if !fs.PostBuildStepsSet[step] {
+				missing = true
+				break
+			}
+		}
+		if missing {
+			featureNames = append(featureNames, feature)
+		}
+	}
+	if len(featureNames) == 0 {
+		return nil
+	}
+	sort.Strings(featureNames)
+
+	if w.dryRun {
+		for _, feature := range featureNames {
+			_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would create post-build tickets for feature %s", feature))
+		}
+		return nil
+	}
+
+	changed := false
+	for _, feature := range featureNames {
+		fs := features[feature]
+		created := w.createPostBuildTicketsForFeature(feature, fs, order, parallelGroups)
+		if created == 0 {
+			continue
+		}
+		changed = true
+		msg := fmt.Sprintf("feature %s build complete — created %d post-build tickets", feature, created)
+		_ = w.notifier.Info(ctx, msg)
+		if err := w.appendEvent("post_build_generated", "", map[string]any{
+			"feature": feature,
+			"created": created,
+		}); err != nil {
+			w.log("WARN: appendEvent(post_build_generated, %s): %v", feature, err)
+		}
+	}
+
+	if changed {
+		return w.saveTracker()
+	}
+	return nil
+}
+
+func (w *Watchdog) postBuildPlan() ([]string, [][]string, bool) {
+	if w == nil || w.config == nil {
+		return nil, nil, false
+	}
+	order := normalizeStepList(w.config.PostBuild.Order)
+	if len(order) == 0 {
+		return nil, nil, false
+	}
+	parallelGroups := make([][]string, 0, len(w.config.PostBuild.ParallelGroups))
+	for _, group := range w.config.PostBuild.ParallelGroups {
+		steps := normalizeStepList(group)
+		if len(steps) >= 2 {
+			parallelGroups = append(parallelGroups, steps)
+		}
+	}
+	return order, parallelGroups, true
+}
+
+func normalizeStepList(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]struct{}{}
+	for _, raw := range in {
+		step := strings.TrimSpace(raw)
+		if step == "" {
+			continue
+		}
+		if _, ok := seen[step]; ok {
+			continue
+		}
+		seen[step] = struct{}{}
+		out = append(out, step)
+	}
+	return out
+}
+
+func (w *Watchdog) collectBuildFeatureStatus(order []string) map[string]*buildFeatureStatus {
+	stepSet := make(map[string]struct{}, len(order))
+	for _, step := range order {
+		stepSet[step] = struct{}{}
+	}
+
+	features := map[string]*buildFeatureStatus{}
+	for id, tk := range w.tracker.Tickets {
+		if feature, ok := buildFeatureFromTicket(id, tk, stepSet); ok {
+			fs := features[feature]
+			if fs == nil {
+				fs = &buildFeatureStatus{PostBuildStepsSet: map[string]bool{}}
+				features[feature] = fs
+			}
+			fs.BuildTotal++
+			if tk.Status == tracker.StatusDone {
+				fs.BuildDone++
+			}
+			fs.BuildIDs = append(fs.BuildIDs, id)
+			if tk.Phase > fs.MaxBuildPhase {
+				fs.MaxBuildPhase = tk.Phase
+			}
+			continue
+		}
+		if step, feature, ok := postBuildStepFromTicket(id, tk, stepSet); ok {
+			fs := features[feature]
+			if fs == nil {
+				fs = &buildFeatureStatus{PostBuildStepsSet: map[string]bool{}}
+				features[feature] = fs
+			}
+			fs.PostBuildStepsSet[step] = true
+		}
+	}
+
+	for _, fs := range features {
+		sort.Strings(fs.BuildIDs)
+	}
+	return features
+}
+
+func buildFeatureFromTicket(id string, tk tracker.Ticket, postBuildSteps map[string]struct{}) (string, bool) {
+	ticketType := strings.TrimSpace(tk.Type)
+	if ticketType != "" {
+		if _, isPostBuild := postBuildSteps[ticketType]; isPostBuild {
+			return "", false
+		}
+		if ticketType == "build" {
+			feature := strings.TrimSpace(tk.Feature)
+			if feature == "" {
+				feature, _ = parseBuildID(id)
+			}
+			if feature != "" {
+				return feature, true
+			}
+		}
+		return "", false
+	}
+	feature, ok := parseBuildID(id)
+	if !ok || feature == "" {
+		return "", false
+	}
+	return feature, true
+}
+
+func parseBuildID(id string) (string, bool) {
+	id = strings.TrimSpace(id)
+	i := strings.LastIndex(id, "-")
+	if i <= 0 || i+1 >= len(id) {
+		return "", false
+	}
+	feature := strings.TrimSpace(id[:i])
+	suffix := strings.TrimSpace(id[i+1:])
+	if feature == "" || suffix == "" {
+		return "", false
+	}
+	if _, err := strconv.Atoi(suffix); err != nil {
+		return "", false
+	}
+	return feature, true
+}
+
+func postBuildStepFromTicket(id string, tk tracker.Ticket, stepSet map[string]struct{}) (step, feature string, ok bool) {
+	ticketType := strings.TrimSpace(tk.Type)
+	feature = strings.TrimSpace(tk.Feature)
+	if ticketType != "" {
+		if _, isStep := stepSet[ticketType]; isStep && feature != "" {
+			return ticketType, feature, true
+		}
+	}
+	i := strings.Index(id, "-")
+	if i <= 0 || i+1 >= len(id) {
+		return "", "", false
+	}
+	step = strings.TrimSpace(id[:i])
+	feature = strings.TrimSpace(id[i+1:])
+	if step == "" || feature == "" {
+		return "", "", false
+	}
+	if _, isStep := stepSet[step]; !isStep {
+		return "", "", false
+	}
+	return step, feature, true
+}
+
+func (w *Watchdog) createPostBuildTicketsForFeature(
+	feature string,
+	fs *buildFeatureStatus,
+	order []string,
+	parallelGroups [][]string,
+) int {
+	if fs == nil {
+		return 0
+	}
+	phase := fs.MaxBuildPhase
+	if phase <= 0 {
+		phase = 1
+	}
+
+	stages := buildPostBuildStages(order, parallelGroups)
+	if len(stages) == 0 {
+		return 0
+	}
+
+	created := 0
+	prevStageIDs := append([]string(nil), fs.BuildIDs...)
+	sort.Strings(prevStageIDs)
+
+	for _, stage := range stages {
+		nextStageIDs := make([]string, 0, len(stage))
+		for _, step := range stage {
+			id := step + "-" + feature
+			nextStageIDs = append(nextStageIDs, id)
+			if _, exists := w.tracker.Tickets[id]; exists {
+				fs.PostBuildStepsSet[step] = true
+				continue
+			}
+			tk := tracker.Ticket{
+				Status:  tracker.StatusTodo,
+				Phase:   phase,
+				Depends: append([]string(nil), prevStageIDs...),
+				Type:    step,
+				Feature: feature,
+				Branch:  "feat/" + id,
+				Desc:    postBuildDescription(step, feature),
+				Profile: postBuildProfile(step),
+			}
+			if len(tk.Depends) == 0 {
+				tk.Depends = []string{}
+			}
+			w.tracker.Tickets[id] = tk
+			fs.PostBuildStepsSet[step] = true
+			created++
+		}
+		sort.Strings(nextStageIDs)
+		prevStageIDs = nextStageIDs
+	}
+	return created
+}
+
+func buildPostBuildStages(order []string, parallelGroups [][]string) [][]string {
+	order = normalizeStepList(order)
+	if len(order) == 0 {
+		return nil
+	}
+	n := len(order)
+	indexByStep := make(map[string]int, n)
+	for i, step := range order {
+		indexByStep[step] = i
+	}
+
+	parent := make([]int, n)
+	for i := range parent {
+		parent[i] = i
+	}
+	var find func(int) int
+	find = func(x int) int {
+		if parent[x] != x {
+			parent[x] = find(parent[x])
+		}
+		return parent[x]
+	}
+	union := func(a, b int) {
+		ra := find(a)
+		rb := find(b)
+		if ra == rb {
+			return
+		}
+		if ra < rb {
+			parent[rb] = ra
+		} else {
+			parent[ra] = rb
+		}
+	}
+
+	for _, group := range parallelGroups {
+		steps := normalizeStepList(group)
+		if len(steps) < 2 {
+			continue
+		}
+		indices := make([]int, 0, len(steps))
+		for _, step := range steps {
+			if idx, ok := indexByStep[step]; ok {
+				indices = append(indices, idx)
+			}
+		}
+		if len(indices) < 2 {
+			continue
+		}
+		base := indices[0]
+		for _, idx := range indices[1:] {
+			union(base, idx)
+		}
+	}
+
+	stageMap := map[int][]int{}
+	for i := 0; i < n; i++ {
+		root := find(i)
+		stageMap[root] = append(stageMap[root], i)
+	}
+
+	roots := make([]int, 0, len(stageMap))
+	for root := range stageMap {
+		roots = append(roots, root)
+	}
+	sort.Ints(roots)
+
+	stages := make([][]string, 0, len(roots))
+	for _, root := range roots {
+		indices := stageMap[root]
+		sort.Ints(indices)
+		stage := make([]string, 0, len(indices))
+		for _, idx := range indices {
+			stage = append(stage, order[idx])
+		}
+		stages = append(stages, stage)
+	}
+	return stages
+}
+
+func postBuildProfile(step string) string {
+	switch strings.TrimSpace(step) {
+	case "gap", "review", "mem":
+		return "code-reviewer"
+	case "tst":
+		return "e2e-runner"
+	case "sec":
+		return "security-reviewer"
+	case "doc":
+		return "doc-updater"
+	case "clean":
+		return "refactor-cleaner"
+	default:
+		return ""
+	}
+}
+
+func postBuildDescription(step, feature string) string {
+	switch strings.TrimSpace(step) {
+	case "int":
+		return fmt.Sprintf("Integration merge for %s", feature)
+	case "gap":
+		return fmt.Sprintf("Gap assessment for %s", feature)
+	case "tst":
+		return fmt.Sprintf("E2E + build verification for %s", feature)
+	case "review":
+		return fmt.Sprintf("Code review for %s", feature)
+	case "sec":
+		return fmt.Sprintf("Security review for %s", feature)
+	case "doc":
+		return fmt.Sprintf("Documentation update for %s", feature)
+	case "clean":
+		return fmt.Sprintf("Refactor/cleanup for %s", feature)
+	case "mem":
+		return fmt.Sprintf("Lessons learned for %s", feature)
+	default:
+		return fmt.Sprintf("Post-build %s for %s", step, feature)
+	}
 }

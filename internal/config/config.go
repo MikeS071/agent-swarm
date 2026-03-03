@@ -14,20 +14,21 @@ type Config struct {
 	Backend       BackendConfig       `toml:"backend"`
 	Notifications NotificationsConfig `toml:"notifications"`
 	Watchdog      WatchdogConfig      `toml:"watchdog"`
+	PostBuild     PostBuildConfig     `toml:"post_build"`
 	Integration   IntegrationConfig   `toml:"integration"`
 	Serve         ServeConfig         `toml:"serve"`
 	Install       InstallConfig       `toml:"install"`
 }
 
 type ProjectConfig struct {
-	Name       string `toml:"name"`
-	Repo       string `toml:"repo"`
-	BaseBranch string `toml:"base_branch"`
-	MaxAgents  int    `toml:"max_agents"`
-	MinRAMMB   int    `toml:"min_ram_mb"`
-	PromptDir  string `toml:"prompt_dir"`
-	Tracker     string `toml:"tracker"`
-	AutoApprove bool   `toml:"auto_approve"`
+	Name           string `toml:"name"`
+	Repo           string `toml:"repo"`
+	BaseBranch     string `toml:"base_branch"`
+	MaxAgents      int    `toml:"max_agents"`
+	MinRAMMB       int    `toml:"min_ram_mb"`
+	PromptDir      string `toml:"prompt_dir"`
+	Tracker        string `toml:"tracker"`
+	AutoApprove    bool   `toml:"auto_approve"`
 	SpecFile       string `toml:"spec_file"`
 	DefaultProfile string `toml:"default_profile"`
 }
@@ -41,8 +42,8 @@ type BackendConfig struct {
 }
 
 type NotificationsConfig struct {
-	Type           string `toml:"type"`
-	TelegramChatID string `toml:"telegram_chat_id"`
+	Type             string `toml:"type"`
+	TelegramChatID   string `toml:"telegram_chat_id"`
 	TelegramToken    string `toml:"telegram_token"`
 	TelegramTokenCmd string `toml:"telegram_token_cmd"`
 }
@@ -52,6 +53,11 @@ type WatchdogConfig struct {
 	MaxRuntime   string `toml:"max_runtime"`
 	StaleTimeout string `toml:"stale_timeout"`
 	MaxRetries   int    `toml:"max_retries"`
+}
+
+type PostBuildConfig struct {
+	Order          []string   `toml:"order"`
+	ParallelGroups [][]string `toml:"parallel_groups"`
 }
 
 type IntegrationConfig struct {
