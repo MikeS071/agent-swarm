@@ -632,7 +632,51 @@ func (m *model) approveGate() {
 		m.lastErr = err
 		return
 	}
-	m.lastErr = fmt.Errorf("✅ Phase %d approved — spawning next phase", phase)
+	// Immediately spawn available tickets in the new phase
+	d2 := dispatcher.New(m.config, m.tracker)
+	_, spawnable := d2.Evaluate()
+	spawned := 0
+	proj = m.projects[m.projectIndex]
+	repoDir := absOrJoin(proj.configDir, m.config.Project.Repo)
+	for _, tid := range spawnable {
+		if !d2.CanSpawnMore() {
+			break
+		}
+		tk, ok := m.tracker.Get(tid)
+		if !ok {
+			continue
+		}
+		worktreeDir := repoDir + "-worktrees/" + tid
+		promptSrc := filepath.Join(absOrJoin(proj.configDir, m.config.Project.PromptDir), tid+".md")
+		if _, serr := os.Stat(worktreeDir); os.IsNotExist(serr) {
+			exec.Command("git", "-C", repoDir, "branch", "-D", tk.Branch).Run()
+			exec.Command("git", "-C", repoDir, "worktree", "prune").Run()
+			out, werr := exec.Command("git", "-C", repoDir, "worktree", "add", "-b", tk.Branch, worktreeDir, m.config.Project.BaseBranch).CombinedOutput()
+			if werr != nil {
+				m.lastErr = fmt.Errorf("worktree: %s: %w", strings.TrimSpace(string(out)), werr)
+				continue
+			}
+		}
+		if pdata, rerr := os.ReadFile(promptSrc); rerr == nil {
+			_ = os.WriteFile(filepath.Join(worktreeDir, ".codex-prompt.md"), pdata, 0644)
+		}
+		_, err := m.backend.Spawn(context.Background(), backend.SpawnConfig{
+			TicketID:    tid,
+			Branch:      tk.Branch,
+			WorkDir:     worktreeDir,
+			PromptFile:  filepath.Join(worktreeDir, ".codex-prompt.md"),
+			Model:       m.config.Backend.Model,
+			Effort:      m.config.Backend.Effort,
+			ProjectName: m.config.Project.Name,
+		})
+		if err != nil {
+			continue
+		}
+		_ = m.tracker.SetStatus(tid, "running")
+		spawned++
+	}
+	_ = m.tracker.SaveTo(proj.trackerPath)
+	m.lastErr = fmt.Errorf("✅ Phase %d approved — spawned %d tickets", phase, spawned)
 }
 
 func (m *model) nextProject() {
