@@ -2,9 +2,9 @@
 
 ## What is Agent Swarm?
 
-Agent Swarm is a Go CLI that orchestrates parallel coding agents across isolated git worktrees. You define tickets with dependencies and phases, and the swarm handles spawning agents, tracking progress, detecting completions, chaining dependent work, and alerting you at phase gates.
+Agent Swarm is a Go CLI that orchestrates parallel coding agents across isolated git worktrees. You define tickets with dependencies and phases, and the swarm handles spawning agents, tracking progress, chaining unblocked work, and enforcing phase gates.
 
-Think of it as a CI system for AI coding agents — except instead of running tests, it runs agents that write code.
+The CLI command is `swarm`.
 
 ## Installation
 
@@ -17,8 +17,8 @@ Or build from source:
 ```bash
 git clone https://github.com/MikeS071/agent-swarm.git
 cd agent-swarm
-go build -o agent-swarm .
-mv agent-swarm ~/.local/bin/
+go build -o swarm .
+mv swarm ~/.local/bin/
 ```
 
 ## Getting Started
@@ -31,238 +31,203 @@ swarm init my-app
 ```
 
 This creates:
-- `swarm.toml` — project configuration
-- `swarm/tracker.json` — ticket state (the source of truth)
-- `swarm/prompts/` — directory for agent prompt files
+- `swarm.toml`
+- `swarm/tracker.json`
+- `swarm/prompts/`
+- `swarm/features/`
+- `swarm/logs/`
+- `AGENTS.md`, `.agents/skills/`, `.agents/profiles/`, `.codex/rules/`
 
-### 2. Define your tickets
+### 2. Define tickets
 
 ```bash
-# Phase 1 — no dependencies, can run in parallel
+# Phase 1
 swarm add-ticket feat-01 --phase 1 --desc "Database schema and migrations"
 swarm add-ticket feat-02 --phase 1 --desc "Authentication with JWT"
 swarm add-ticket feat-03 --phase 1 --desc "REST API scaffold"
 
-# Phase 2 — depends on Phase 1 tickets
+# Phase 2
 swarm add-ticket feat-04 --phase 2 --deps feat-01,feat-02 --desc "User CRUD endpoints"
 swarm add-ticket feat-05 --phase 2 --deps feat-01,feat-03 --desc "API middleware + validation"
 
-# Phase 3 — final audit
-swarm add-ticket feat-06 --phase 3 --deps feat-04,feat-05 --desc "Integration tests + README"
+# Phase 3
+swarm add-ticket feat-06 --phase 3 --deps feat-04,feat-05 --desc "Integration tests + docs"
 ```
 
-### 3. Write prompts
+### 3. Create prompts
 
-Each ticket needs a prompt file at `swarm/prompts/<ticket-id>.md`. This is what the AI agent receives as its task.
+Each ticket should have `swarm/prompts/<ticket-id>.md`.
 
 ```bash
-swarm prompts check       # shows which tickets are missing prompts
-swarm prompts gen feat-01 # creates a template prompt
+swarm prompts check
+swarm prompts gen feat-01
 ```
 
-A good prompt includes:
-- **Context** — what the project is, what exists already
-- **Scope** — exactly what this ticket should build (files, functions, interfaces)
-- **Tests** — what tests to write first (TDD)
-- **Deliverables** — build passes, tests pass, commit message format
+If a prompt file is missing at spawn time, the watchdog auto-generates a minimal prompt from ticket description and saves it.
 
-### 4. Configure your backend
+### 4. Configure backend + project context
 
 Edit `swarm.toml`:
 
 ```toml
+[project]
+auto_approve = false
+spec_file = "SPEC.md"      # optional project spec included in layered prompts
+default_profile = "code-agent"  # optional default profile from .agents/profiles
+
 [backend]
-type = "codex-tmux"           # currently supported: codex-tmux
-model = "gpt-5.3-codex"       # model to use
-bypass_sandbox = true          # --dangerously-bypass-approvals-and-sandbox
+type = "codex-tmux"
+model = "gpt-5.3-codex"
+effort = "high"
+bypass_sandbox = true
 ```
 
-### 5. Start the watchdog
+### 5. Start orchestration
 
 ```bash
-swarm watch              # long-running daemon (default 5m interval)
-swarm watch --once       # single pass (good for cron)
-swarm watch --dry-run    # preview without executing
+swarm watch
+swarm watch --once
+swarm watch --dry-run
 ```
 
-The watchdog:
-1. Detects when agents exit with commits → marks them done
-2. Auto-spawns the next unblocked tickets
-3. Respawns agents that exit without commits (once — fails on second attempt)
-4. Alerts on stuck agents (exceeding max runtime)
-5. Stops at phase gates and notifies you
+What the watchdog does:
+1. Monitors `running` tickets and detects exits.
+2. Marks tickets `done` when commits are detected.
+3. Respawns tickets that exit without commits up to retry limit.
+4. Marks tickets `failed` after retry exhaustion.
+5. Spawns newly unblocked tickets within current phase.
+6. Emits `PHASE_GATE` when a phase completes (unless auto-approve advances it).
 
-### 6. Monitor progress
+### 6. Monitor and control
 
 ```bash
-swarm status             # quick table
-swarm status --json      # machine-readable
-swarm status --watch     # live TUI dashboard
+swarm status
+swarm status --json
+swarm status --compact
+swarm status --live
+swarm status --watch
 ```
 
-TUI keybindings:
+TUI keys (`swarm status --watch`):
+
 | Key | Action |
 |---|---|
 | `↑`/`↓` | Navigate tickets |
-| `Enter` | View agent's live output |
+| `Enter` | View ticket output |
 | `Esc` | Back to list |
 | `k` | Kill selected agent |
 | `r` | Respawn selected agent |
 | `A` | Approve phase gate |
-| `m` | Toggle auto/manual mode (persists to swarm.toml) |
-| `p` | Switch project |
-| `Tab` | Toggle compact/detailed view |
-| `[` | Previous page |
-| `]` | Next page |
+| `m` | Toggle auto/manual mode |
+| `p` | Cycle projects |
+| `[` / `]` | Previous/next page |
+| `Tab` | Toggle compact mode |
 | `q` | Quit |
 
 ### 7. Phase gates
 
-When all tickets in a phase complete, the watchdog stops and waits:
+When all tickets in the current phase are `done`, the dispatcher emits `PHASE_GATE`.
+
+Manual flow:
 
 ```bash
-swarm status    # review completed work
-swarm go        # approve → next phase auto-spawns
+swarm status
+swarm go
 ```
 
-#### Auto-approve mode
-
-For fully autonomous operation, set `auto_approve = true` in `swarm.toml`:
+Auto flow:
 
 ```toml
 [project]
 auto_approve = true
 ```
 
-With auto-approve enabled, the watchdog automatically advances through phase gates without waiting for `swarm go`.
-
-You can also toggle this at runtime in the TUI by pressing `m`. The title bar shows `[auto]` or `[manual]` to indicate the current mode. Changes are persisted to `swarm.toml` and take effect on the next watchdog pass (within seconds). No restart needed.
-
-In auto mode, the watchdog automatically approves phase gates and spawns the next phase. In manual mode, it stops at each gate until you press `A` or run `agent-swarm go`. Failed tickets always block their dependents regardless of mode.
-
-Phase gate events are still logged to the event trail for auditability.
+`auto_approve` can also be toggled in TUI with `m` and is persisted to `swarm.toml`.
 
 ### 8. Integration
 
-After all tickets complete, merge branches in dependency order:
+After tickets complete, merge done branches in dependency order:
 
 ```bash
-swarm integrate --dry-run                        # preview merge plan
-swarm integrate --base main --branch integration/v1  # execute
-swarm integrate --continue                       # resume after conflict resolution
+swarm integrate --dry-run
+swarm integrate --base main --branch integration/v1
+swarm integrate --continue
 ```
 
-On conflict, the CLI stops and shows exactly which files conflict and how to resolve.
+`--continue` resumes after conflict resolution using saved integration state.
 
-### 9. System service
+### 9. Archive completed tickets
 
 ```bash
-swarm install                  # auto-detect platform, install watchdog
-swarm install --interval 3m    # custom interval
-swarm install --uninstall      # remove cleanly
+# archive done tickets
+swarm archive
+
+# archive done tickets from one phase
+swarm archive --phase 2
+
+# preview archive operation
+swarm archive --dry-run
+
+# restore archived tickets back into tracker
+swarm archive --restore
 ```
 
-Supports: systemd (Linux), launchd (macOS), cron (fallback).
+Archive storage path: `swarm/archive.json`.
 
-## Concepts
-
-### Tickets
-A unit of work with: ID, phase, dependencies, status (`todo` → `running` → `done`/`failed`), and a git branch.
-
-### Phases
-Sequential groups. All tickets within a phase run in parallel. Phase N+1 starts only after Phase N is complete and approved.
-
-### Dispatcher Signals
-| Signal | Meaning |
-|---|---|
-| (spawn) | Spawnable tickets exist → auto-spawn |
-| PHASE_GATE | Phase complete → waiting for `swarm go` |
-| ALL_DONE | Project complete 🏁 |
-| BLOCKED | No spawnable tickets, deps incomplete |
-
-### Worktrees
-Each agent gets an isolated git worktree — a separate checkout on its own branch. Agents never conflict with each other. Branches merge via `swarm integrate`.
-
-### Progress Tracking
-**Primary:** Agents output `PROGRESS: X/N` lines → parsed into progress bars.
-**Fallback:** Heuristic from file changes (30%), build output (70%), git commit (90%), exit with commits (100%).
-
-## HTTP API
+### 10. API server
 
 ```bash
 swarm serve --port 8090
 ```
 
-Key endpoints:
-- `GET /api/projects` — list projects
-- `GET /api/projects/:name/tickets` — tickets with progress
-- `GET /api/events` — SSE real-time event stream
-- `POST /api/projects/:name/tickets/:id/kill` — kill agent
-- `POST /api/projects/:name/phase-gate/approve` — approve gate
+Common endpoints:
+- `GET /api/projects`
+- `GET /api/projects/{name}/status`
+- `GET /api/projects/{name}/tickets`
+- `GET /api/projects/{name}/phase-gate`
+- `POST /api/projects/{name}/phase-gate/approve`
+- `GET /api/events` (SSE)
 
-## Tips
-
-- **The `effort` field maps to `--config model_reasoning_effort=<value>`. Set to `"high"` for best results.
-- **Start small:** 2-3 tickets in Phase 1 to validate before scaling to 7 agents
-- **Prompt quality matters:** Well-scoped prompts with clear deliverables beat vague ones
-- **TDD in prompts:** Tell agents to write tests first — makes completion detection reliable
-- **Monitor RAM:** Set `min_ram_mb` — watchdog won't spawn below threshold
-- **Phase gates are checkpoints:** Review, test, catch issues before building on them
-- **One commit per ticket:** Simplifies integration
-
-## Archiving Done Tickets
-
-After a swarm completes, clean up the tracker by archiving done tickets:
+### 11. Install scheduler
 
 ```bash
-# Archive all done tickets
-agent-swarm archive
-
-# Archive only tickets from phase 2
-agent-swarm archive --phase 2
-
-# Preview what would be archived
-agent-swarm archive --dry-run
-
-# Restore all archived tickets
-agent-swarm archive restore
-
-# View archived tickets
-agent-swarm archive list
+swarm install
+swarm install --interval 3m
+swarm install --uninstall
 ```
 
-In the TUI (`status --watch`), press `a` to archive done tickets for the current project.
+Supported install targets: `systemd` (Linux), `launchd` (macOS), `cron` fallback.
 
-Archived tickets are stored in `swarm/archive.json` alongside the tracker.
+## Prompt Layering (v2 Runtime)
 
-## Lessons Learned
+When spawning a ticket, prompt content is assembled in this order:
+1. `AGENTS.md`
+2. `project.spec_file` (if configured)
+3. Profile markdown (`ticket.profile` or `project.default_profile`)
+4. Ticket prompt file (`swarm/prompts/<ticket>.md`)
+5. `swarm/prompt-footer.md` (if present)
 
-See [lessons-learned.md](lessons-learned.md) for hard-won operational knowledge covering:
-- Prompt engineering patterns (what works, what kills agents)
-- Watchdog failure modes and fixes
-- Common agent behaviour patterns and recovery workflows
-- Scaling configurations
-- Decapod governance integration
+This gives each agent governance context, optional project spec, role-specific behavior, task details, and mandatory delivery process.
 
-## Standard Phase Flow
+## Concepts
 
-Unless `auto_approve = true` overrides it, every phase follows this mandatory sequence:
+### Tickets
+Unit of work with ID, phase, dependencies, status (`todo`, `running`, `done`, `failed`, `blocked`), branch, and optional profile.
 
-```
-Feature tickets (parallel) → int-N (integration merge) → tst-N (E2E test) → Phase gate → Human verifies → Fix → Approve → Next phase
-```
+### Phases
+Strictly sequential. Tickets only spawn within the currently unlocked phase.
 
-Add integration and test tickets to every phase:
+### Dispatcher Signals
+| Signal | Meaning |
+|---|---|
+| `(spawn)` | Spawnable tickets exist in current phase |
+| `PHASE_GATE` | Current phase complete, waiting for approval |
+| `ALL_DONE` | All tickets done |
+| `BLOCKED` | Nothing spawnable (deps, failures, or capacity constraints) |
 
-```bash
-# For each phase N, add:
-swarm add-ticket int-N --phase N --deps <all-phase-N-tickets> --desc "Phase N integration merge"
-swarm add-ticket tst-N --phase N --deps int-N --desc "Phase N E2E test suite"
-```
+### Worktrees
+Each ticket runs in `<repo>-worktrees/<ticket-id>` on its own branch (default `feat/<ticket-id>`).
 
-The integration ticket merges all feature branches, resolves conflicts, and verifies the build. The test ticket runs the full test suite with coverage. Only after both pass does the phase gate fire for human approval.
-```
+## Notes on Feature Lifecycle Commands
 
-git add -A
-git commit -m "docs: standard phase flow — feature → integrate → test → gate → verify → approve"
-git push origin main 2>&1 | tail -2
+The repository includes v2 lifecycle design docs in `docs/AGENT-SWARM-V2-SPEC.md` (feature-state machine and specialist profile flows). The currently implemented CLI command set is the one shown in this guide.
