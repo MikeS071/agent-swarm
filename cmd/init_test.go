@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -202,5 +203,34 @@ func TestScaffoldProjectRegistersProjectInOpenClawRegistry(t *testing.T) {
 	}
 	if got, _ := entry["promptDir"].(string); got != "swarm/prompts" {
 		t.Fatalf("promptDir=%q want swarm/prompts", got)
+	}
+}
+
+func TestScaffoldProjectBootstrapsGitRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root := filepath.Join(t.TempDir(), "git-bootstrap-project")
+	registryPath := filepath.Join(t.TempDir(), "projects.json")
+	if err := os.Setenv("OPENCLAW_PROJECTS_REGISTRY", registryPath); err != nil {
+		t.Fatalf("set env: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("OPENCLAW_PROJECTS_REGISTRY") })
+
+	if err := scaffoldProject(root); err != nil {
+		t.Fatalf("scaffoldProject: %v", err)
+	}
+
+	cmd := exec.Command("git", "-C", root, "rev-parse", "--is-inside-work-tree")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("expected git repo, err=%v out=%s", err, string(out))
+	}
+	cmd = exec.Command("git", "-C", root, "rev-parse", "--verify", "refs/heads/main")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("expected main branch, err=%v out=%s", err, string(out))
+	}
+	cmd = exec.Command("git", "-C", root, "rev-parse", "--verify", "HEAD")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("expected initial commit, err=%v out=%s", err, string(out))
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -60,6 +61,9 @@ func scaffoldProject(project string) error {
 	// Write swarm.toml
 	cfg := config.Default()
 	cfg.Project.Name = projectName
+	if base := detectBaseBranch(root); strings.TrimSpace(base) != "" {
+		cfg.Project.BaseBranch = base
+	}
 	cfgBytes, err := toml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
@@ -112,6 +116,10 @@ func scaffoldProject(project string) error {
 		return fmt.Errorf("copy rules: %w", err)
 	}
 	copied += n
+
+	if err := ensureGitBootstrap(root, cfg.Project.BaseBranch); err != nil {
+		return fmt.Errorf("git bootstrap: %w", err)
+	}
 
 	if err := registerProjectInRegistry(projectName, root); err != nil {
 		return fmt.Errorf("register project: %w", err)
@@ -264,6 +272,63 @@ func registerProjectInRegistry(projectName, root string) error {
 	}
 	if err := os.WriteFile(registryPath, append(out, '\n'), 0o644); err != nil {
 		return fmt.Errorf("write registry %s: %w", registryPath, err)
+	}
+	return nil
+}
+
+func detectBaseBranch(root string) string {
+	if _, err := exec.LookPath("git"); err != nil {
+		return ""
+	}
+	out, err := exec.Command("git", "-C", root, "branch", "--show-current").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func ensureGitBootstrap(root, baseBranch string) error {
+	if _, err := exec.LookPath("git"); err != nil {
+		return fmt.Errorf("git not found in PATH")
+	}
+	if strings.TrimSpace(baseBranch) == "" {
+		baseBranch = "main"
+	}
+
+	if err := runGit(root, "rev-parse", "--is-inside-work-tree"); err != nil {
+		if err := runGit(root, "init", "-b", baseBranch); err != nil {
+			if err2 := runGit(root, "init"); err2 != nil {
+				return fmt.Errorf("git init: %w", err)
+			}
+			_ = runGit(root, "branch", "-M", baseBranch)
+		}
+	}
+
+	if err := runGit(root, "rev-parse", "--verify", "HEAD"); err != nil {
+		if err := runGit(root, "add", "-A"); err != nil {
+			return fmt.Errorf("git add: %w", err)
+		}
+		if err := runGit(root, "commit", "-m", "chore: initialize agent-swarm project scaffold"); err != nil {
+			_ = runGit(root, "config", "user.name", "agent-swarm")
+			_ = runGit(root, "config", "user.email", "agent-swarm@local")
+			if err2 := runGit(root, "commit", "-m", "chore: initialize agent-swarm project scaffold"); err2 != nil {
+				return fmt.Errorf("git commit initial scaffold: %w", err2)
+			}
+		}
+	}
+
+	if err := runGit(root, "rev-parse", "--verify", "refs/heads/"+baseBranch); err != nil {
+		if err := runGit(root, "branch", "-M", baseBranch); err != nil {
+			return fmt.Errorf("ensure base branch %s: %w", baseBranch, err)
+		}
+	}
+	return nil
+}
+
+func runGit(root string, args ...string) error {
+	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git %v: %w (%s)", args, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
