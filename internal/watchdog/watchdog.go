@@ -2,6 +2,8 @@ package watchdog
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -275,15 +277,27 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		}
 	}
 
-	// Re-read tracker from disk to pick up external changes (e.g. TUI phase gate approval).
-	if w.tracker != nil && w.config != nil && w.config.Project.Tracker != "" {
+	// Re-read tracker from disk and merge externally-added tickets to avoid clobbering.
+	if w.config != nil && w.config.Project.Tracker != "" {
 		if fresh, err := tracker.Load(w.config.Project.Tracker); err == nil {
-			// Preserve in-memory state that disk may not have (running sessions etc are already in tickets).
-			// But always adopt the disk unlocked_phase if higher (TUI may have approved a gate).
-			if fresh.UnlockedPhase > w.tracker.UnlockedPhase {
-				w.tracker.UnlockedPhase = fresh.UnlockedPhase
-				w.dispatcher.SetUnlockedPhase(fresh.UnlockedPhase)
+			if w.tracker != nil {
+				if w.tracker.Tickets == nil {
+					w.tracker.Tickets = map[string]tracker.Ticket{}
+				}
+				for id, tk := range fresh.Tickets {
+					if _, ok := w.tracker.Tickets[id]; !ok {
+						w.tracker.Tickets[id] = tk
+					}
+				}
+				if fresh.UnlockedPhase > w.tracker.UnlockedPhase {
+					w.tracker.UnlockedPhase = fresh.UnlockedPhase
+					if w.dispatcher != nil {
+						w.dispatcher.SetUnlockedPhase(fresh.UnlockedPhase)
+					}
+				}
 			}
+		} else {
+			w.log("WARN: reload tracker from disk failed: %v", err)
 		}
 	}
 
@@ -469,15 +483,100 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	}
 
 	if sig == dispatcher.SignalAllDone && !w.completionSent {
-		w.completionSent = true
-		report := w.buildCompletionReport()
-		if err := w.appendEvent("project_complete", "", nil); err != nil {
-			w.log("WARN: appendEvent(project_complete): %v", err)
+		signature := w.completionSignature()
+		if w.wasCompletionNotified(signature) {
+			w.completionSent = true
+		} else {
+			w.completionSent = true
+			report := w.buildCompletionReport()
+			if err := w.appendEvent("project_complete", "", nil); err != nil {
+				w.log("WARN: appendEvent(project_complete): %v", err)
+			}
+			_ = w.notifier.Alert(ctx, report)
+			if err := w.markCompletionNotified(signature); err != nil {
+				w.log("WARN: markCompletionNotified: %v", err)
+			}
 		}
-		_ = w.notifier.Alert(ctx, report)
 	}
 
 	return nil
+}
+
+func (w *Watchdog) completionSignature() string {
+	if w == nil || w.tracker == nil {
+		return ""
+	}
+	ids := make([]string, 0, len(w.tracker.Tickets))
+	for id := range w.tracker.Tickets {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var b strings.Builder
+	for _, id := range ids {
+		tk := w.tracker.Tickets[id]
+		b.WriteString(id)
+		b.WriteString("|")
+		b.WriteString(tk.Status)
+		b.WriteString("|")
+		b.WriteString(tk.SHA)
+		b.WriteString("\n")
+	}
+	h := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(h[:])
+}
+
+func (w *Watchdog) completionMarkerPath() string {
+	if w == nil || w.config == nil || strings.TrimSpace(w.config.Project.Tracker) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(w.config.Project.Tracker), ".completion-notified")
+}
+
+func (w *Watchdog) wasCompletionNotified(signature string) bool {
+	if strings.TrimSpace(signature) == "" {
+		return false
+	}
+	p := w.completionMarkerPath()
+	if p == "" {
+		return false
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return false
+	}
+	raw := strings.TrimSpace(string(b))
+	if raw == "" {
+		return false
+	}
+	if strings.HasPrefix(raw, "{") {
+		var meta map[string]any
+		if json.Unmarshal([]byte(raw), &meta) == nil {
+			if s, ok := meta["signature"].(string); ok {
+				return s == signature
+			}
+		}
+	}
+	return raw == signature
+}
+
+func (w *Watchdog) markCompletionNotified(signature string) error {
+	if strings.TrimSpace(signature) == "" {
+		return nil
+	}
+	p := w.completionMarkerPath()
+	if p == "" {
+		return nil
+	}
+	meta := map[string]any{
+		"signature": signature,
+		"project":   w.tracker.Project,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, append(b, '\n'), 0o644)
 }
 
 func (w *Watchdog) buildCompletionReport() string {
@@ -531,12 +630,16 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		branch = "feat/" + ticketID
 	}
 
+	workDir := w.worktree.Path(ticketID)
 	if !w.worktree.Exists(ticketID) {
-		if _, err := w.worktree.Create(ticketID, branch); err != nil {
+		createdPath, err := w.worktree.Create(ticketID, branch)
+		if err != nil {
 			return err
 		}
+		if strings.TrimSpace(createdPath) != "" {
+			workDir = createdPath
+		}
 	}
-	workDir := w.worktree.Path(ticketID)
 
 	srcPrompt := filepath.Join(w.config.Project.PromptDir, ticketID+".md")
 	promptBody, err := os.ReadFile(srcPrompt)

@@ -208,7 +208,7 @@ parallel_groups = [["review", "sec"]]
 	}
 }
 
-func TestLoadEmptyFeaturesDirFails(t *testing.T) {
+func TestLoadEmptyFeaturesDirDefaults(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := writeFile(t, dir, "swarm.toml", `
@@ -225,8 +225,11 @@ type = "stdout"
 [watchdog]
 `)
 
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error for empty project.features_dir")
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error for empty project.features_dir: %v", err)
+	}
+	if got.Project.FeaturesDir != "swarm/features" {
+		t.Fatalf("features_dir=%q want swarm/features", got.Project.FeaturesDir)
 	}
 }

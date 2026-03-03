@@ -60,9 +60,17 @@ func (m *Manager) Create(ticketID, branch string) (string, error) {
 		return "", err
 	}
 	path := m.Path(ticketID)
-	// Clean stale branch if it exists (e.g. from a previous failed run)
-	if _, err := m.git(m.RepoDir, "branch", "-D", branch); err == nil {
-		// branch deleted successfully — was stale
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+	if _, err := m.git(m.RepoDir, "rev-parse", "--verify", branch); err == nil {
+		if _, err := m.git(m.RepoDir, "worktree", "add", path, branch); err != nil {
+			if existing, e := m.worktreePathForBranch(branch); e == nil && existing != "" {
+				return existing, nil
+			}
+			return "", err
+		}
+		return path, nil
 	}
 	if _, err := m.git(m.RepoDir, "worktree", "add", "-b", branch, path, m.BaseBranch); err != nil {
 		return "", err
@@ -104,8 +112,23 @@ func (m *Manager) HasCommits(ticketID, baseBranch string) (bool, string, error) 
 	branch := "feat/" + ticketID
 	wtPath := m.Path(ticketID)
 
-	// If worktree directory doesn't exist, treat as no commits
+	// If worktree directory doesn't exist, still check repo and remote branch.
 	if _, statErr := os.Stat(wtPath); os.IsNotExist(statErr) {
+		logOut, _ := m.git(m.RepoDir, "log", fmt.Sprintf("%s..%s", baseBranch, branch), "--oneline")
+		if strings.TrimSpace(logOut) != "" {
+			sha, shaErr := m.git(m.RepoDir, "rev-parse", "--short", branch)
+			if shaErr == nil {
+				return true, strings.TrimSpace(sha), nil
+			}
+		}
+		_, _ = m.git(m.RepoDir, "fetch", "origin", branch)
+		remoteLog, remoteErr := m.git(m.RepoDir, "log", fmt.Sprintf("%s..origin/%s", baseBranch, branch), "--oneline")
+		if remoteErr == nil && strings.TrimSpace(remoteLog) != "" {
+			sha, shaErr := m.git(m.RepoDir, "rev-parse", "--short", "origin/"+branch)
+			if shaErr == nil {
+				return true, strings.TrimSpace(sha), nil
+			}
+		}
 		return false, "", nil
 	}
 
@@ -180,6 +203,19 @@ func (m *Manager) CleanupOlderThan(duration time.Duration) ([]string, error) {
 	}
 	sort.Strings(removed)
 	return removed, nil
+}
+
+func (m *Manager) worktreePathForBranch(branch string) (string, error) {
+	list, err := m.List()
+	if err != nil {
+		return "", err
+	}
+	for _, wt := range list {
+		if wt.Branch == branch {
+			return wt.Path, nil
+		}
+	}
+	return "", nil
 }
 
 func parsePorcelainList(out string) []Worktree {

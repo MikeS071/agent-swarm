@@ -140,7 +140,9 @@ func (d *Dispatcher) ApprovePhaseGate() (Signal, []string) {
 			d.mu.Unlock()
 			if d.tracker != nil {
 				d.tracker.UnlockedPhase = p
-				if saveErr := d.tracker.Save(); saveErr != nil { fmt.Fprintf(os.Stderr, "SAVE ERROR: %v\n", saveErr) }
+				if saveErr := d.tracker.Save(); saveErr != nil {
+					fmt.Fprintf(os.Stderr, "SAVE ERROR: %v\n", saveErr)
+				}
 			}
 			break
 		}
@@ -152,6 +154,12 @@ func (d *Dispatcher) ApprovePhaseGate() (Signal, []string) {
 func (d *Dispatcher) SetUnlockedPhase(phase int) {
 	d.mu.Lock()
 	d.unlockedPhase = phase
+	d.mu.Unlock()
+}
+
+func (d *Dispatcher) SetTracker(t *tracker.Tracker) {
+	d.mu.Lock()
+	d.tracker = t
 	d.mu.Unlock()
 }
 
@@ -249,8 +257,6 @@ func (d *Dispatcher) spawnableInPhase(phase int) []string {
 	sort.Strings(ids)
 	return ids
 }
-
-
 
 func hasMinRAM(minMB int) bool {
 	if minMB <= 0 {

@@ -174,6 +174,9 @@ func Load(path string) (*Config, error) {
 	if err := toml.Unmarshal(b, cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	if strings.TrimSpace(cfg.Project.FeaturesDir) == "" {
+		cfg.Project.FeaturesDir = "swarm/features"
+	}
 
 	if err := validate(cfg); err != nil {
 		return nil, err
@@ -206,9 +209,6 @@ func validate(cfg *Config) error {
 	}
 	if strings.TrimSpace(cfg.Project.Tracker) == "" {
 		return fmt.Errorf("project.tracker is required")
-	}
-	if strings.TrimSpace(cfg.Project.FeaturesDir) == "" {
-		return fmt.Errorf("project.features_dir is required")
 	}
 	if cfg.Project.MaxAgents <= 0 {
 		return fmt.Errorf("project.max_agents must be > 0")
