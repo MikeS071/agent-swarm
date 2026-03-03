@@ -528,7 +528,7 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	}
 
 	// Assemble layered prompt: governance → spec → profile → ticket → footer
-	assembled := w.assemblePrompt(tk, promptBody)
+	assembled := w.assemblePromptForTicket(ticketID, tk, promptBody)
 
 	promptPath := filepath.Join(workDir, ".codex-prompt.md")
 	if err := os.WriteFile(promptPath, assembled, 0o644); err != nil {
@@ -545,7 +545,7 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		Branch:      branch,
 		WorkDir:     workDir,
 		PromptFile:  promptPath,
-		Model:       w.config.Backend.Model,
+		Model:       w.resolveSpawnModel(ticketID, tk),
 		Effort:      w.config.Backend.Effort,
 		ProjectName: w.config.Project.Name,
 	})
@@ -568,8 +568,15 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 
 // projectRoot returns the project root directory (parent of swarm/).
 func (w *Watchdog) projectRoot() string {
+	if w == nil || w.config == nil {
+		return ""
+	}
+	trackerPath := strings.TrimSpace(w.config.Project.Tracker)
+	if trackerPath == "" {
+		return ""
+	}
 	// Tracker is at swarm/tracker.json — go up two levels
-	return filepath.Dir(filepath.Dir(w.config.Project.Tracker))
+	return filepath.Dir(filepath.Dir(trackerPath))
 }
 
 // assemblePrompt builds the full layered prompt:
@@ -579,9 +586,13 @@ func (w *Watchdog) projectRoot() string {
 // Layer 4: ticket prompt (the actual task)
 // Layer 5: footer (quality gates, commit rules)
 func (w *Watchdog) assemblePrompt(tk tracker.Ticket, ticketPrompt []byte) []byte {
+	return w.assemblePromptForTicket("", tk, ticketPrompt)
+}
+
+func (w *Watchdog) assemblePromptForTicket(ticketID string, tk tracker.Ticket, ticketPrompt []byte) []byte {
 	var parts [][]byte
 	root := w.projectRoot()
-	profileName := effectiveProfileName(tk, w.config.Project.DefaultProfile)
+	profileName := w.selectProfileName(ticketID, tk)
 
 	// Layer 1: AGENTS.md
 	agentsPath := filepath.Join(root, "AGENTS.md")
@@ -601,7 +612,7 @@ func (w *Watchdog) assemblePrompt(tk tracker.Ticket, ticketPrompt []byte) []byte
 		}
 	}
 
-	// Layer 3: profile (ticket-level overrides project default)
+	// Layer 3: profile (ticket-level overrides inferred/default profile)
 	if profileName != "" {
 		profilePath := filepath.Join(root, ".agents", "profiles", profileName+".md")
 		if data, err := os.ReadFile(profilePath); err == nil {
@@ -616,22 +627,14 @@ func (w *Watchdog) assemblePrompt(tk tracker.Ticket, ticketPrompt []byte) []byte
 	parts = append(parts, ticketPrompt)
 
 	// Layer 5: footer
-<<<<<<< HEAD
 	parts = append(parts, loadPromptFooter(w.config.Project.PromptDir))
-=======
-	footerPath := filepath.Join(filepath.Dir(w.config.Project.PromptDir), "prompt-footer.md")
-	if data, err := os.ReadFile(footerPath); err == nil {
-		parts = append(parts, data)
-	}
 	if suffix := reviewOutputSuffix(profileName); len(suffix) > 0 {
 		parts = append(parts, suffix)
 	}
->>>>>>> origin/feat/v2-09
 
 	return joinParts(parts)
 }
 
-<<<<<<< HEAD
 func loadPromptFooter(promptDir string) []byte {
 	footerPath := filepath.Join(filepath.Dir(promptDir), "prompt-footer.md")
 	if data, err := os.ReadFile(footerPath); err == nil {
@@ -640,13 +643,128 @@ func loadPromptFooter(promptDir string) []byte {
 		}
 	}
 	return []byte(defaultPromptFooter)
-=======
-func effectiveProfileName(tk tracker.Ticket, defaultProfile string) string {
-	name := strings.TrimSpace(tk.Profile)
-	if name == "" {
-		name = strings.TrimSpace(defaultProfile)
+}
+
+func (w *Watchdog) selectProfileName(ticketID string, tk tracker.Ticket) string {
+	if profile := strings.TrimSpace(tk.Profile); profile != "" {
+		return profile
 	}
-	return name
+	if inferred := inferProfileFromTicketID(ticketID); inferred != "" {
+		return inferred
+	}
+	if w == nil || w.config == nil {
+		return ""
+	}
+	return strings.TrimSpace(w.config.Project.DefaultProfile)
+}
+
+func inferProfileFromTicketID(ticketID string) string {
+	id := strings.ToLower(strings.TrimSpace(ticketID))
+	switch {
+	case strings.HasPrefix(id, "arch-"), strings.HasPrefix(id, "arc-"):
+		return "architect"
+	case strings.HasPrefix(id, "gap-"), strings.HasPrefix(id, "review-"), strings.HasPrefix(id, "rev-"), strings.HasPrefix(id, "mem-"):
+		return "code-reviewer"
+	case strings.HasPrefix(id, "sec-"):
+		return "security-reviewer"
+	case strings.HasPrefix(id, "tst-"):
+		return "e2e-runner"
+	case strings.HasPrefix(id, "doc-"):
+		return "doc-updater"
+	case strings.HasPrefix(id, "clean-"), strings.HasPrefix(id, "cln-"):
+		return "refactor-cleaner"
+	case strings.HasPrefix(id, "fix-"):
+		return "code-agent"
+	default:
+		return ""
+	}
+}
+
+func (w *Watchdog) resolveSpawnModel(ticketID string, tk tracker.Ticket) string {
+	defaultModel := ""
+	backendType := ""
+	if w != nil && w.config != nil {
+		defaultModel = strings.TrimSpace(w.config.Backend.Model)
+		backendType = strings.TrimSpace(w.config.Backend.Type)
+	}
+
+	profileName := w.selectProfileName(ticketID, tk)
+	if profileName == "" {
+		return defaultModel
+	}
+
+	profileModel := w.profileFrontmatterModel(profileName)
+	if profileModel == "" {
+		return defaultModel
+	}
+
+	if isCodexBackendType(backendType) && !isCodexCompatibleModel(profileModel) {
+		w.log("WARN: profile %q requested model %q; backend %q using fallback %q", profileName, profileModel, backendType, defaultModel)
+		return defaultModel
+	}
+
+	return profileModel
+}
+
+func (w *Watchdog) profileFrontmatterModel(profileName string) string {
+	root := w.projectRoot()
+	if root == "" || strings.TrimSpace(profileName) == "" {
+		return ""
+	}
+	profilePath := filepath.Join(root, ".agents", "profiles", profileName+".md")
+	data, err := os.ReadFile(profilePath)
+	if err != nil {
+		return ""
+	}
+	return parseProfileFrontmatterModel(data)
+}
+
+func parseProfileFrontmatterModel(data []byte) string {
+	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	content = strings.TrimPrefix(content, "\ufeff")
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return ""
+	}
+
+	end := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			end = i
+			break
+		}
+	}
+	if end == -1 {
+		return ""
+	}
+
+	for i := 1; i < end; i++ {
+		key, value, ok := strings.Cut(lines[i], ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "model") {
+			continue
+		}
+		model := strings.TrimSpace(value)
+		model = strings.Trim(model, "'\"")
+		model = strings.TrimSpace(model)
+		return model
+	}
+	return ""
+}
+
+func isCodexBackendType(backendType string) bool {
+	bt := strings.TrimSpace(backendType)
+	return bt == "" || bt == "codex-tmux"
+}
+
+func isCodexCompatibleModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return false
+	}
+	if strings.HasPrefix(m, "gpt-") || strings.Contains(m, "codex") {
+		return true
+	}
+	return strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3") || strings.HasPrefix(m, "o4")
 }
 
 func reviewOutputSuffix(profileName string) []byte {
@@ -687,7 +805,6 @@ Verdict: BLOCK if any critical or high. WARN if only medium/low. PASS if clean.
 
 After writing the JSON, commit and push it.
 `, path))
->>>>>>> origin/feat/v2-09
 }
 
 // joinParts concatenates byte slices with double-newline separators.
