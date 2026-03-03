@@ -10,9 +10,9 @@ import (
 const (
 	// TypeCodexTmux is the default tmux-based Codex backend.
 	TypeCodexTmux = "codex-tmux"
-	// TypeClaudeCode reserved for future Claude backend support.
+	// TypeClaudeCode is reserved for future Claude CLI integration.
 	TypeClaudeCode = "claude-code"
-	// TypeOpenAIAPI reserved for future API-driven backend support.
+	// TypeOpenAIAPI is reserved for future API-driven integration.
 	TypeOpenAIAPI = "openai-api"
 )
 
@@ -35,9 +35,7 @@ var defaultRegistry = NewRegistry()
 
 // NewRegistry creates a backend registry with built-in backends.
 func NewRegistry() *Registry {
-	r := &Registry{
-		factories: make(map[string]Factory),
-	}
+	r := &Registry{factories: map[string]Factory{}}
 	_ = r.Register(TypeCodexTmux, func(opts BuildOptions) (AgentBackend, error) {
 		return NewCodexBackend(opts.Binary, opts.BypassSandbox), nil
 	})
@@ -83,7 +81,6 @@ func (r *Registry) Build(backendType string, opts BuildOptions) (AgentBackend, e
 	if !ok {
 		return nil, fmt.Errorf("unsupported backend type %q (supported: %s)", key, strings.Join(r.supportedTypes(), ", "))
 	}
-
 	return factory(opts)
 }
 

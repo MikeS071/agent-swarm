@@ -138,6 +138,10 @@ type Watchdog struct {
 	notifier   notify.Notifier
 	events     *EventLog
 
+	backendFactory func(backendType string) (backend.AgentBackend, error)
+	backendCache   map[string]backend.AgentBackend
+	backendMu      sync.Mutex
+
 	dryRun         bool
 	retries        map[string]int
 	spawnErrors    map[string]int
@@ -169,18 +173,39 @@ func New(
 	if cfg != nil && strings.TrimSpace(cfg.Project.Tracker) != "" {
 		eventsPath = filepath.Join(filepath.Dir(cfg.Project.Tracker), "events.jsonl")
 	}
-	return &Watchdog{
-		config:      cfg,
-		tracker:     tr,
-		dispatcher:  d,
-		backend:     be,
-		worktree:    wt,
-		notifier:    n,
-		events:      NewEventLog(eventsPath),
-		retries:     map[string]int{},
-		spawnErrors: map[string]int{},
-		stuckAlerts: map[string]bool{},
+
+	cache := map[string]backend.AgentBackend{}
+	defaultType := normalizedBackendType("")
+	if cfg != nil {
+		defaultType = normalizedBackendType(cfg.Backend.Type)
 	}
+	if be != nil {
+		cache[defaultType] = be
+	}
+
+	w := &Watchdog{
+		config:       cfg,
+		tracker:      tr,
+		dispatcher:   d,
+		backend:      be,
+		worktree:     wt,
+		notifier:     n,
+		events:       NewEventLog(eventsPath),
+		backendCache: cache,
+		retries:      map[string]int{},
+		spawnErrors:  map[string]int{},
+		stuckAlerts:  map[string]bool{},
+	}
+	w.backendFactory = func(backendType string) (backend.AgentBackend, error) {
+		if w.config == nil {
+			return backend.Build(backendType, backend.BuildOptions{})
+		}
+		return backend.Build(backendType, backend.BuildOptions{
+			Binary:        w.config.Backend.Binary,
+			BypassSandbox: w.config.Backend.BypassSandbox,
+		})
+	}
+	return w
 }
 
 // SetDryRun toggles non-mutating evaluation mode.
@@ -269,12 +294,14 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	w.log("pass: %d running, checking exits", len(runningTicketIDs(w.tracker)))
 	for _, ticketID := range runningTicketIDs(w.tracker) {
 		tk := w.tracker.Tickets[ticketID]
-		handle := backend.AgentHandle{SessionName: swarmSessionPrefix + ticketID}
-		if ts := parseTimestamp(tk.StartedAt); !ts.IsZero() {
-			handle.StartedAt = ts
+		handle := w.sessionHandleForTicket(ticketID, tk)
+		runningBackend, _, err := w.runtimeBackendForTicket(tk)
+		if err != nil {
+			w.log("WARN: backend for %s: %v", ticketID, err)
+			continue
 		}
 
-		if w.backend.HasExited(handle) {
+		if runningBackend.HasExited(handle) {
 			hasCommits, sha, err := w.worktree.HasCommits(ticketID, w.config.Project.BaseBranch)
 			if err != nil {
 				w.log("WARN: HasCommits(%s) error: %v — treating as no commits", ticketID, err)
@@ -345,7 +372,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			continue
 		}
 
-		if w.backend.IsAlive(handle) && w.runtimeExceeded(tk.StartedAt) && !w.stuckAlerts[ticketID] {
+		if runningBackend.IsAlive(handle) && w.runtimeExceeded(tk.StartedAt) && !w.stuckAlerts[ticketID] {
 			w.stuckAlerts[ticketID] = true
 			_ = w.notifier.Alert(ctx, fmt.Sprintf("ticket %s may be stuck (exceeded max_runtime)", ticketID))
 		}
@@ -535,17 +562,23 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		return fmt.Errorf("write prompt %s: %w", promptPath, err)
 	}
 
+	spawnBackend, spawnBackendType, err := w.spawnBackendForTicket(ticketID, tk)
+	if err != nil {
+		return err
+	}
+	model := w.resolveSpawnModelForBackend(ticketID, tk, spawnBackendType)
+
 	if w.dryRun {
 		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would spawn %s", ticketID))
 		return nil
 	}
 
-	handle, err := w.backend.Spawn(ctx, backend.SpawnConfig{
+	handle, err := spawnBackend.Spawn(ctx, backend.SpawnConfig{
 		TicketID:    ticketID,
 		Branch:      branch,
 		WorkDir:     workDir,
 		PromptFile:  promptPath,
-		Model:       w.resolveSpawnModel(ticketID, tk),
+		Model:       model,
 		Effort:      w.config.Backend.Effort,
 		ProjectName: w.config.Project.Name,
 	})
@@ -558,12 +591,123 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	if tk.Branch == "" {
 		tk.Branch = branch
 	}
+	tk.SessionName = strings.TrimSpace(handle.SessionName)
+	if tk.SessionName == "" {
+		tk.SessionName = w.sessionNameForTicket(ticketID)
+	}
+	tk.SessionBackend = spawnBackendType
+	tk.SessionModel = model
 	w.tracker.Tickets[ticketID] = tk
 
 	if err := w.saveTracker(); err != nil {
 		return err
 	}
-	return w.appendEvent("ticket_spawned", ticketID, map[string]any{"session": handle.SessionName})
+	return w.appendEvent("ticket_spawned", ticketID, map[string]any{
+		"session": handle.SessionName,
+		"backend": spawnBackendType,
+		"model":   model,
+	})
+}
+
+func (w *Watchdog) spawnBackendForTicket(ticketID string, tk tracker.Ticket) (backend.AgentBackend, string, error) {
+	requested := w.resolveSpawnBackendType(ticketID, tk)
+	be, resolvedType, err := w.backendForType(requested)
+	if err == nil {
+		return be, resolvedType, nil
+	}
+	fallbackType := w.defaultBackendType()
+	if resolvedType != fallbackType {
+		if fb, _, ferr := w.backendForType(fallbackType); ferr == nil {
+			w.log("WARN: backend %q unavailable for %s; falling back to %q", resolvedType, ticketID, fallbackType)
+			return fb, fallbackType, nil
+		}
+	}
+	return nil, resolvedType, err
+}
+
+func (w *Watchdog) runtimeBackendForTicket(tk tracker.Ticket) (backend.AgentBackend, string, error) {
+	requested := strings.TrimSpace(tk.SessionBackend)
+	if requested == "" {
+		requested = w.defaultBackendType()
+	}
+	be, resolvedType, err := w.backendForType(requested)
+	if err == nil {
+		return be, resolvedType, nil
+	}
+	fallbackType := w.defaultBackendType()
+	if resolvedType != fallbackType {
+		if fb, _, ferr := w.backendForType(fallbackType); ferr == nil {
+			w.log("WARN: backend %q unavailable for running session; falling back to %q", resolvedType, fallbackType)
+			return fb, fallbackType, nil
+		}
+	}
+	return nil, resolvedType, err
+}
+
+func (w *Watchdog) backendForType(backendType string) (backend.AgentBackend, string, error) {
+	key := normalizedBackendType(backendType)
+	if w == nil {
+		return nil, key, fmt.Errorf("watchdog is nil")
+	}
+
+	w.backendMu.Lock()
+	defer w.backendMu.Unlock()
+
+	if w.backendCache == nil {
+		w.backendCache = map[string]backend.AgentBackend{}
+	}
+	if be, ok := w.backendCache[key]; ok && be != nil {
+		return be, key, nil
+	}
+
+	if w.backend != nil && key == w.defaultBackendType() {
+		w.backendCache[key] = w.backend
+		return w.backend, key, nil
+	}
+	if w.backendFactory == nil {
+		return nil, key, fmt.Errorf("backend factory is not configured")
+	}
+
+	be, err := w.backendFactory(key)
+	if err != nil {
+		return nil, key, err
+	}
+	w.backendCache[key] = be
+	return be, key, nil
+}
+
+func (w *Watchdog) defaultBackendType() string {
+	if w == nil || w.config == nil {
+		return normalizedBackendType("")
+	}
+	return normalizedBackendType(w.config.Backend.Type)
+}
+
+func normalizedBackendType(v string) string {
+	n := strings.ToLower(strings.TrimSpace(v))
+	if n == "" {
+		return backend.TypeCodexTmux
+	}
+	return n
+}
+
+func (w *Watchdog) sessionNameForTicket(ticketID string) string {
+	if w != nil && w.config != nil && strings.TrimSpace(w.config.Project.Name) != "" {
+		return swarmSessionPrefix + strings.TrimSpace(w.config.Project.Name) + "_" + ticketID
+	}
+	return swarmSessionPrefix + ticketID
+}
+
+func (w *Watchdog) sessionHandleForTicket(ticketID string, tk tracker.Ticket) backend.AgentHandle {
+	sessionName := strings.TrimSpace(tk.SessionName)
+	if sessionName == "" {
+		sessionName = w.sessionNameForTicket(ticketID)
+	}
+	h := backend.AgentHandle{SessionName: sessionName}
+	if ts := parseTimestamp(tk.StartedAt); !ts.IsZero() {
+		h.StartedAt = ts
+	}
+	return h
 }
 
 // projectRoot returns the project root directory (parent of swarm/).
@@ -681,11 +825,13 @@ func inferProfileFromTicketID(ticketID string) string {
 }
 
 func (w *Watchdog) resolveSpawnModel(ticketID string, tk tracker.Ticket) string {
+	return w.resolveSpawnModelForBackend(ticketID, tk, w.defaultBackendType())
+}
+
+func (w *Watchdog) resolveSpawnModelForBackend(ticketID string, tk tracker.Ticket, backendType string) string {
 	defaultModel := ""
-	backendType := ""
 	if w != nil && w.config != nil {
 		defaultModel = strings.TrimSpace(w.config.Backend.Model)
-		backendType = strings.TrimSpace(w.config.Backend.Type)
 	}
 
 	profileName := w.selectProfileName(ticketID, tk)
@@ -706,6 +852,19 @@ func (w *Watchdog) resolveSpawnModel(ticketID string, tk tracker.Ticket) string 
 	return profileModel
 }
 
+func (w *Watchdog) resolveSpawnBackendType(ticketID string, tk tracker.Ticket) string {
+	defaultType := w.defaultBackendType()
+	profileName := w.selectProfileName(ticketID, tk)
+	if profileName == "" {
+		return defaultType
+	}
+	profileBackend := w.profileFrontmatterBackend(profileName)
+	if profileBackend == "" {
+		return defaultType
+	}
+	return profileBackend
+}
+
 func (w *Watchdog) profileFrontmatterModel(profileName string) string {
 	root := w.projectRoot()
 	if root == "" || strings.TrimSpace(profileName) == "" {
@@ -719,7 +878,32 @@ func (w *Watchdog) profileFrontmatterModel(profileName string) string {
 	return parseProfileFrontmatterModel(data)
 }
 
+func (w *Watchdog) profileFrontmatterBackend(profileName string) string {
+	root := w.projectRoot()
+	if root == "" || strings.TrimSpace(profileName) == "" {
+		return ""
+	}
+	profilePath := filepath.Join(root, ".agents", "profiles", profileName+".md")
+	data, err := os.ReadFile(profilePath)
+	if err != nil {
+		return ""
+	}
+	return parseProfileFrontmatterBackend(data)
+}
+
 func parseProfileFrontmatterModel(data []byte) string {
+	return parseProfileFrontmatterValue(data, "model")
+}
+
+func parseProfileFrontmatterBackend(data []byte) string {
+	v := parseProfileFrontmatterValue(data, "backend")
+	if v == "" {
+		return ""
+	}
+	return normalizedBackendType(v)
+}
+
+func parseProfileFrontmatterValue(data []byte, key string) string {
 	content := strings.ReplaceAll(string(data), "\r\n", "\n")
 	content = strings.TrimPrefix(content, "\ufeff")
 	lines := strings.Split(content, "\n")
@@ -739,21 +923,21 @@ func parseProfileFrontmatterModel(data []byte) string {
 	}
 
 	for i := 1; i < end; i++ {
-		key, value, ok := strings.Cut(lines[i], ":")
-		if !ok || !strings.EqualFold(strings.TrimSpace(key), "model") {
+		k, v, ok := strings.Cut(lines[i], ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(k), key) {
 			continue
 		}
-		model := strings.TrimSpace(value)
-		model = strings.Trim(model, "'\"")
-		model = strings.TrimSpace(model)
-		return model
+		value := strings.TrimSpace(v)
+		value = strings.Trim(value, "'\"")
+		value = strings.TrimSpace(value)
+		return value
 	}
 	return ""
 }
 
 func isCodexBackendType(backendType string) bool {
-	bt := strings.TrimSpace(backendType)
-	return bt == "" || bt == "codex-tmux"
+	bt := normalizedBackendType(backendType)
+	return bt == backend.TypeCodexTmux
 }
 
 func isCodexCompatibleModel(model string) bool {
@@ -1046,13 +1230,13 @@ func (w *Watchdog) runningAgentCount(ctx context.Context) (int, error) {
 	}
 
 	count := 0
-	w.log("pass: %d running, checking exits", len(runningTicketIDs(w.tracker)))
 	for _, ticketID := range runningTicketIDs(w.tracker) {
-		sessName := swarmSessionPrefix + ticketID
-		if w.config.Project.Name != "" {
-			sessName = swarmSessionPrefix + w.config.Project.Name + "_" + ticketID
+		tk := w.tracker.Tickets[ticketID]
+		runningBackend, _, err := w.runtimeBackendForTicket(tk)
+		if err != nil {
+			return 0, err
 		}
-		if w.backend.IsAlive(backend.AgentHandle{SessionName: sessName}) {
+		if runningBackend.IsAlive(w.sessionHandleForTicket(ticketID, tk)) {
 			count++
 		}
 	}
@@ -1063,16 +1247,75 @@ func (w *Watchdog) listRunningSessions(ctx context.Context) ([]string, error) {
 	type projectSessionLister interface {
 		ListSessionsForProject(context.Context, string) ([]string, error)
 	}
-	if lister, ok := w.backend.(projectSessionLister); ok {
-		return lister.ListSessionsForProject(ctx, w.config.Project.Name)
-	}
 	type sessionLister interface {
 		ListSessions(context.Context) ([]string, error)
 	}
-	if lister, ok := w.backend.(sessionLister); ok {
-		return lister.ListSessions(ctx)
+
+	types := map[string]struct{}{w.defaultBackendType(): {}}
+	for _, ticketID := range runningTicketIDs(w.tracker) {
+		tk := w.tracker.Tickets[ticketID]
+		if bt := strings.TrimSpace(tk.SessionBackend); bt != "" {
+			types[normalizedBackendType(bt)] = struct{}{}
+		}
 	}
-	return nil, nil
+
+	projectName := ""
+	if w != nil && w.config != nil {
+		projectName = w.config.Project.Name
+	}
+
+	usedLister := false
+	set := map[string]struct{}{}
+	keys := make([]string, 0, len(types))
+	for k := range types {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, backendType := range keys {
+		be, _, err := w.backendForType(backendType)
+		if err != nil {
+			return nil, err
+		}
+		if lister, ok := be.(projectSessionLister); ok {
+			usedLister = true
+			sessions, err := lister.ListSessionsForProject(ctx, projectName)
+			if err != nil {
+				return nil, err
+			}
+			for _, s := range sessions {
+				if strings.TrimSpace(s) == "" {
+					continue
+				}
+				set[s] = struct{}{}
+			}
+			continue
+		}
+		if lister, ok := be.(sessionLister); ok {
+			usedLister = true
+			sessions, err := lister.ListSessions(ctx)
+			if err != nil {
+				return nil, err
+			}
+			for _, s := range sessions {
+				if strings.TrimSpace(s) == "" {
+					continue
+				}
+				set[s] = struct{}{}
+			}
+		}
+	}
+
+	if !usedLister {
+		return nil, nil
+	}
+
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func runningTicketIDs(tr *tracker.Tracker) []string {

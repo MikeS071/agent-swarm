@@ -10,7 +10,7 @@ import (
 func TestBuildBackend(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
+	cases := []struct {
 		name        string
 		cfg         *config.Config
 		wantErr     bool
@@ -37,7 +37,7 @@ func TestBuildBackend(t *testing.T) {
 		},
 	}
 
-	for _, tc := range tests {
+	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -55,7 +55,7 @@ func TestBuildBackend(t *testing.T) {
 				t.Fatal("expected backend but got nil")
 			}
 			if b.Name() != tc.wantBackend {
-				t.Fatalf("expected backend %q, got %q", tc.wantBackend, b.Name())
+				t.Fatalf("backend = %q, want %q", b.Name(), tc.wantBackend)
 			}
 		})
 	}
