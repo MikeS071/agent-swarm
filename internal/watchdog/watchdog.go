@@ -965,6 +965,7 @@ func buildPostBuildStages(order []string, parallelGroups [][]string) [][]string 
 	for i := range parent {
 		parent[i] = i
 	}
+	grouped := make([]bool, n)
 	var find func(int) int
 	find = func(x int) int {
 		if parent[x] != x {
@@ -999,9 +1000,33 @@ func buildPostBuildStages(order []string, parallelGroups [][]string) [][]string 
 		if len(indices) < 2 {
 			continue
 		}
+		sort.Ints(indices)
+		contiguous := true
+		for i := 1; i < len(indices); i++ {
+			if indices[i] != indices[i-1]+1 {
+				contiguous = false
+				break
+			}
+		}
+		if !contiguous {
+			continue
+		}
+		overlaps := false
+		for _, idx := range indices {
+			if grouped[idx] {
+				overlaps = true
+				break
+			}
+		}
+		if overlaps {
+			continue
+		}
 		base := indices[0]
 		for _, idx := range indices[1:] {
 			union(base, idx)
+		}
+		for _, idx := range indices {
+			grouped[idx] = true
 		}
 	}
 

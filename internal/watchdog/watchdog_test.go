@@ -565,6 +565,51 @@ func TestRunningAgentCountUsesSessionLister(t *testing.T) {
 	}
 }
 
+func TestBuildPostBuildStages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		order          []string
+		parallelGroups [][]string
+		want           [][]string
+	}{
+		{
+			name:           "contiguous groups form parallel stages",
+			order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			parallelGroups: [][]string{{"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}},
+			want:           [][]string{{"int"}, {"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}, {"mem"}},
+		},
+		{
+			name:           "non contiguous groups are ignored",
+			order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			parallelGroups: [][]string{{"gap", "review"}},
+			want:           [][]string{{"int"}, {"gap"}, {"tst"}, {"review"}, {"sec"}, {"doc"}, {"clean"}, {"mem"}},
+		},
+		{
+			name:           "overlapping groups are ignored after first valid group",
+			order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			parallelGroups: [][]string{{"gap", "tst"}, {"tst", "review"}},
+			want:           [][]string{{"int"}, {"gap", "tst"}, {"review"}, {"sec"}, {"doc"}, {"clean"}, {"mem"}},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildPostBuildStages(tc.order, tc.parallelGroups)
+			if len(got) != len(tc.want) {
+				t.Fatalf("stage count = %d, want %d (got=%v)", len(got), len(tc.want), got)
+			}
+			for i := range tc.want {
+				if strings.Join(got[i], ",") != strings.Join(tc.want[i], ",") {
+					t.Fatalf("stage %d = %v, want %v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 func initRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
