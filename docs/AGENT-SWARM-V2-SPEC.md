@@ -431,16 +431,16 @@ bypass_sandbox = true
 spec_file = "SPEC.md"                    # existing
 features_dir = "swarm/features"           # NEW
 
-[profiles]                                # NEW section
-architect = "~/.openclaw/workspace/workflow/agents/architect.md"
-code_agent = "~/.openclaw/workspace/workflow/agents/code-agent.md"
-tdd_guide = "~/.openclaw/workspace/workflow/agents/tdd-guide.md"
-code_reviewer = "~/.openclaw/workspace/workflow/agents/code-reviewer.md"
-security_reviewer = "~/.openclaw/workspace/workflow/agents/security-reviewer.md"
-e2e_runner = "~/.openclaw/workspace/workflow/agents/e2e-runner.md"
-doc_updater = "~/.openclaw/workspace/workflow/agents/doc-updater.md"
-refactor_cleaner = "~/.openclaw/workspace/workflow/agents/refactor-cleaner.md"
-build_error_resolver = "~/.openclaw/workspace/workflow/agents/build-error-resolver.md"
+[profiles]                                # NEW section — paths relative to project root
+architect = ".agents/profiles/architect.md"
+code_agent = ".agents/profiles/code-agent.md"
+tdd_guide = ".agents/profiles/tdd-guide.md"
+code_reviewer = ".agents/profiles/code-reviewer.md"
+security_reviewer = ".agents/profiles/security-reviewer.md"
+e2e_runner = ".agents/profiles/e2e-runner.md"
+doc_updater = ".agents/profiles/doc-updater.md"
+refactor_cleaner = ".agents/profiles/refactor-cleaner.md"
+build_error_resolver = ".agents/profiles/build-error-resolver.md"
 
 [post_build]                              # NEW section
 # Dependency order for post-build tickets
