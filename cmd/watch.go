@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/MikeS071/agent-swarm/internal/config"
@@ -35,6 +36,9 @@ var watchCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if issues := runPrepChecks(cfg, tr, promptDir); len(issues) > 0 {
+			return fmt.Errorf("prep gate failed: %d issue(s); run `agent-swarm prep`", len(issues))
+		}
 		d := dispatcher.New(cfg, tr)
 		wt := worktree.New(cfg.Project.Repo, "", cfg.Project.BaseBranch)
 
@@ -61,5 +65,3 @@ func init() {
 	watchCmd.Flags().BoolVar(&watchDryRun, "dry-run", false, "evaluate actions without executing")
 	rootCmd.AddCommand(watchCmd)
 }
-
-
