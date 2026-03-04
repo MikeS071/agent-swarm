@@ -25,8 +25,8 @@ swarm init myproject
 cd myproject
 
 # 2) Add tickets
-swarm add-ticket sw-01 --phase 1 --desc "implement tracker"
-swarm add-ticket sw-02 --phase 1 --deps sw-01 --desc "status output"
+swarm add-ticket sw-01 --phase 1 --role code-agent --verify-cmd "go test ./..." --desc "implement tracker"
+swarm add-ticket sw-02 --phase 1 --deps sw-01 --role code-agent --verify-cmd "go test ./..." --desc "status output"
 
 # 3) Create or generate prompts
 swarm prompts check
@@ -54,10 +54,17 @@ swarm add-ticket <id> [--deps a,b] [--phase N] [--desc "..."]
 swarm prompts check
   Report todo tickets missing prompts
 
-  Generate prompt template for a ticket
-
 swarm status [--project NAME] [--json] [--compact] [--watch] [--live]
   Show tracker status table/JSON/compact, run Bubble Tea TUI, or 1s live terminal view
+
+swarm prep [--json]
+  Run strict preflight gate (required before watch)
+
+swarm doctor [--json]
+  Show hard-gate readiness summary
+
+swarm plan optimize [--only-todo] [--json] [--apply]
+  Compute/apply throughput-oriented ticket priorities
 
 swarm watch [--interval 5m] [--once] [--dry-run]
   Run watchdog daemon or a single pass
@@ -90,7 +97,7 @@ Global flag: `--config swarm.toml` (path to config file).
 
 1. `swarm init <project>` to scaffold project + agent assets.
 2. Add tickets with `swarm add-ticket` and dependencies/phases.
-3. Create implementation-ready prompts with `swarm prompts build --all`.
+3. Create prompts for todo tickets (or use your ticket-prep pipeline) and validate with `swarm prep`.
 4. Start orchestration with `swarm watch`.
 5. Review phase completion via `swarm status` / `swarm status --watch`.
 6. Approve gates with `swarm go` (CLI) or `A` (TUI), unless `project.auto_approve = true`.
@@ -109,10 +116,13 @@ base_branch = "main"
 max_agents = 7
 min_ram_mb = 1024
 prompt_dir = "swarm/prompts"
+state_dir = ".local/state"
 tracker = "swarm/tracker.json"
 features_dir = "swarm/features"
 auto_approve = false
 spec_file = ""
+require_explicit_role = true
+require_verify_cmd = true
 
 [backend]
 type = "codex-tmux"
@@ -132,6 +142,9 @@ interval = "5m"
 max_runtime = "45m"
 stale_timeout = "10m"
 max_retries = 2
+
+[guardian]
+enabled = true
 
 [integration]
 verify_cmd = ""
@@ -165,6 +178,18 @@ Interactive multi-project dashboard with live ticket controls.
 | `p` | Cycle projects |
 | `[` / `]` | Previous / next page |
 | `Tab` | Toggle compact mode |
+
+
+## Deterministic Completion Protocol
+
+Swarm does **not** trust Codex exit code alone. Ticket completion is determined by:
+
+1. Runtime exit artifact (`<state_dir>/runs/<ticket>/exit.json`) or backend exit detection
+2. Meaningful git diff (ignores prompt/runtime noise files)
+3. Verify gate success (`ticket.verify_cmd` or integration fallback)
+4. Guardian before-mark-done decision
+
+`swarm status` performs reconciliation in non-watch mode so dead sessions converge quickly.
 
 ## Architecture
 

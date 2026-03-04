@@ -42,16 +42,16 @@ This creates:
 
 ```bash
 # Phase 1
-swarm add-ticket feat-01 --phase 1 --desc "Database schema and migrations"
-swarm add-ticket feat-02 --phase 1 --desc "Authentication with JWT"
-swarm add-ticket feat-03 --phase 1 --desc "REST API scaffold"
+swarm add-ticket feat-01 --phase 1 --role code-agent --verify-cmd "go test ./..." --desc "Database schema and migrations"
+swarm add-ticket feat-02 --phase 1 --role code-agent --verify-cmd "go test ./..." --desc "Authentication with JWT"
+swarm add-ticket feat-03 --phase 1 --role code-agent --verify-cmd "go test ./..." --desc "REST API scaffold"
 
 # Phase 2
-swarm add-ticket feat-04 --phase 2 --deps feat-01,feat-02 --desc "User CRUD endpoints"
-swarm add-ticket feat-05 --phase 2 --deps feat-01,feat-03 --desc "API middleware + validation"
+swarm add-ticket feat-04 --phase 2 --deps feat-01,feat-02 --role code-agent --verify-cmd "go test ./..." --desc "User CRUD endpoints"
+swarm add-ticket feat-05 --phase 2 --deps feat-01,feat-03 --role code-agent --verify-cmd "go test ./..." --desc "API middleware + validation"
 
 # Phase 3
-swarm add-ticket feat-06 --phase 3 --deps feat-04,feat-05 --desc "Integration tests + docs"
+swarm add-ticket feat-06 --phase 3 --deps feat-04,feat-05 --role e2e-runner --verify-cmd "go test ./..." --desc "Integration tests + docs"
 ```
 
 ### 3. Create prompts
@@ -79,7 +79,14 @@ effort = "high"
 bypass_sandbox = true
 ```
 
-### 5. Start orchestration
+### 5. Run hard preflight gates
+
+```bash
+swarm doctor --json
+swarm prep --json
+```
+
+### 6. Start orchestration
 
 ```bash
 swarm watch
@@ -88,9 +95,9 @@ swarm watch --dry-run
 ```
 
 What the watchdog does:
-1. Monitors `running` tickets and detects exits.
-2. Marks tickets `done` when commits are detected.
-3. Respawns tickets that exit without commits up to retry limit.
+1. Monitors `running` tickets and detects exits (runtime marker + backend check).
+2. Reconciles exited tickets deterministically (meaningful diff + verify + guardian decision).
+3. Respawns tickets that exit without acceptable completion up to retry limit.
 4. Marks tickets `failed` after retry exhaustion.
 5. Spawns newly unblocked tickets within current phase.
 6. Emits `PHASE_GATE` when a phase completes (unless auto-approve advances it).
@@ -153,7 +160,14 @@ swarm integrate --continue
 
 `--continue` resumes after conflict resolution using saved integration state.
 
-### 9. Archive completed tickets
+### 9. Optimize plan throughput
+
+```bash
+swarm plan optimize --json          # dry-run recommendation
+swarm plan optimize --apply         # persist priorities
+```
+
+### 10. Archive completed tickets
 
 ```bash
 # archive done tickets
@@ -171,7 +185,7 @@ swarm archive --restore
 
 Archive storage path: `swarm/archive.json`.
 
-### 10. API server
+### 11. API server
 
 ```bash
 swarm serve --port 8090
@@ -185,7 +199,7 @@ Common endpoints:
 - `POST /api/projects/{name}/phase-gate/approve`
 - `GET /api/events` (SSE)
 
-### 11. Install scheduler
+### 12. Install scheduler
 
 ```bash
 swarm install
@@ -216,7 +230,7 @@ See [lessons-learned.md](lessons-learned.md) for hard-won operational knowledge 
 ## Concepts
 
 ### Tickets
-Unit of work with ID, phase, dependencies, status (`todo`, `running`, `done`, `failed`, `blocked`), branch, and optional profile.
+Unit of work with ID, phase, dependencies, status (`todo`, `running`, `done`, `failed`, `blocked`), branch, explicit role/profile, and verify command.
 
 ### Phases
 Strictly sequential. Tickets only spawn within the currently unlocked phase.
@@ -237,7 +251,7 @@ Each ticket runs in `<repo>-worktrees/<ticket-id>` on its own branch (default `f
 The repository includes v2 lifecycle design docs in `docs/AGENT-SWARM-V2-SPEC.md` (feature-state machine and specialist profile flows). The currently implemented CLI command set is the one shown in this guide.
 
 
-### 12. Reset completion notifications
+### 13. Reset completion notifications
 
 When a project reaches `ALL_DONE`, completion notifications are deduped using `swarm/.completion-notified`.
 
@@ -250,7 +264,7 @@ swarm notify reset-completion
 This only removes the marker for the current project config.
 
 
-### 13. Multi-project watchdog
+### 14. Multi-project watchdog
 
 For OpenClaw setups with multiple repos, prefer a multi-project timer that runs:
 
