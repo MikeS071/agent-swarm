@@ -1433,8 +1433,10 @@ func (w *Watchdog) guardianCheck(ctx context.Context, ev guardian.Event, ticketI
 		Phase:    tk.Phase,
 		RunID:    strings.TrimSpace(tk.RunID),
 		Context: map[string]any{
-			"type":    tk.Type,
-			"feature": tk.Feature,
+			"type":       tk.Type,
+			"feature":    tk.Feature,
+			"profile":    strings.TrimSpace(tk.Profile),
+			"verify_cmd": strings.TrimSpace(tk.VerifyCmd),
 		},
 	})
 	if err != nil {
