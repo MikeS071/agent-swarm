@@ -227,6 +227,29 @@ func (w *Watchdog) SetDryRun(v bool) {
 	}
 }
 
+
+func (w *Watchdog) notifyInfo(ctx context.Context, msg string) error {
+	if w == nil || w.notifier == nil {
+		return nil
+	}
+	project := "unknown"
+	if w.tracker != nil && strings.TrimSpace(w.tracker.Project) != "" {
+		project = w.tracker.Project
+	}
+	return w.notifier.Info(ctx, fmt.Sprintf("[%s] %s", project, msg))
+}
+
+func (w *Watchdog) notifyAlert(ctx context.Context, msg string) error {
+	if w == nil || w.notifier == nil {
+		return nil
+	}
+	project := "unknown"
+	if w.tracker != nil && strings.TrimSpace(w.tracker.Project) != "" {
+		project = w.tracker.Project
+	}
+	return w.notifier.Alert(ctx, fmt.Sprintf("[%s] %s", project, msg))
+}
+
 func (w *Watchdog) SetConfigPath(p string) {
 	if w != nil {
 		w.configPath = p
@@ -324,7 +347,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 
 			if hasCommits {
 				if w.dryRun {
-					_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would mark %s done (%s)", ticketID, sha))
+					_ = w.notifyInfo(ctx, fmt.Sprintf("[dry-run] would mark %s done (%s)", ticketID, sha))
 					continue
 				}
 				sig, spawnable := w.dispatcher.MarkDone(ticketID, sha)
@@ -357,7 +380,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			attempt := w.retries[ticketID]
 			if attempt < w.maxRetries() {
 				if w.dryRun {
-					_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would respawn %s (attempt %d)", ticketID, attempt))
+					_ = w.notifyInfo(ctx, fmt.Sprintf("[dry-run] would respawn %s (attempt %d)", ticketID, attempt))
 					continue
 				}
 				if err := w.appendEvent("respawn", ticketID, map[string]any{"attempt": attempt}); err != nil {
@@ -370,7 +393,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			}
 
 			if w.dryRun {
-				_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would mark %s failed after %d attempts", ticketID, attempt))
+				_ = w.notifyInfo(ctx, fmt.Sprintf("[dry-run] would mark %s failed after %d attempts", ticketID, attempt))
 				continue
 			}
 			if err := w.dispatcher.MarkFailed(ticketID); err != nil {
@@ -382,13 +405,13 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			if err := w.appendEvent("ticket_failed", ticketID, map[string]any{"attempt": attempt}); err != nil {
 				return err
 			}
-			_ = w.notifier.Alert(ctx, fmt.Sprintf("ticket %s failed after %d attempts", ticketID, attempt))
+			_ = w.notifyAlert(ctx, fmt.Sprintf("ticket %s failed after %d attempts", ticketID, attempt))
 			continue
 		}
 
 		if runningBackend.IsAlive(handle) && w.runtimeExceeded(tk.StartedAt) && !w.stuckAlerts[ticketID] {
 			w.stuckAlerts[ticketID] = true
-			_ = w.notifier.Alert(ctx, fmt.Sprintf("ticket %s may be stuck (exceeded max_runtime)", ticketID))
+			_ = w.notifyAlert(ctx, fmt.Sprintf("ticket %s may be stuck (exceeded max_runtime)", ticketID))
 		}
 	}
 
@@ -419,7 +442,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				}
 				ticketID := spawnable[i]
 				if w.dryRun {
-					_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would idle-spawn %s", ticketID))
+					_ = w.notifyInfo(ctx, fmt.Sprintf("[dry-run] would idle-spawn %s", ticketID))
 					continue
 				}
 				if err := w.appendEvent("idle_spawn", ticketID, nil); err != nil {
@@ -432,7 +455,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 						w.log("ERROR: marking %s failed after 3 spawn failures", ticketID)
 						_ = w.dispatcher.MarkFailed(ticketID)
 						_ = w.saveTracker()
-						_ = w.notifier.Alert(ctx, fmt.Sprintf("ticket %s failed: spawn error after 3 attempts", ticketID))
+						_ = w.notifyAlert(ctx, fmt.Sprintf("ticket %s failed: spawn error after 3 attempts", ticketID))
 					}
 				} else {
 					delete(w.spawnErrors, ticketID)
@@ -444,7 +467,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	sig, _ := w.dispatcher.Evaluate()
 	if sig == dispatcher.SignalPhaseGate {
 		if w.config.Project.AutoApprove {
-			_ = w.notifier.Info(ctx, "phase gate reached — auto-approving")
+			_ = w.notifyInfo(ctx, "phase gate reached — auto-approving")
 			approvedSig, spawnable := w.dispatcher.ApprovePhaseGate()
 			if err := w.saveTracker(); err != nil {
 				w.log("WARN: saveTracker after phase gate: %v", err)
@@ -470,12 +493,12 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		} else if !w.gateNoticed {
 			w.gateNoticed = true
 			if w.dryRun {
-				_ = w.notifier.Info(ctx, "[dry-run] phase gate reached")
+				_ = w.notifyInfo(ctx, "[dry-run] phase gate reached")
 			} else {
 				if err := w.appendEvent("phase_gate", "", nil); err != nil {
 					w.log("WARN: appendEvent(phase_gate): %v", err)
 				}
-				_ = w.notifier.Info(ctx, "phase gate reached; run `swarm go` to continue")
+				_ = w.notifyInfo(ctx, "phase gate reached; run `swarm go` to continue")
 			}
 		}
 	} else {
@@ -492,7 +515,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			if err := w.appendEvent("project_complete", "", nil); err != nil {
 				w.log("WARN: appendEvent(project_complete): %v", err)
 			}
-			_ = w.notifier.Alert(ctx, report)
+			_ = w.notifyAlert(ctx, report)
 			if err := w.markCompletionNotified(signature); err != nil {
 				w.log("WARN: markCompletionNotified: %v", err)
 			}
@@ -540,7 +563,7 @@ func (w *Watchdog) maybeSendStatusReport(ctx context.Context, sig dispatcher.Sig
 	if len(active) > 0 {
 		msg += " | active: " + strings.Join(active, ", ")
 	}
-	if err := w.notifier.Info(ctx, msg); err != nil {
+	if err := w.notifyInfo(ctx, msg); err != nil {
 		return err
 	}
 	if err := w.writeLastStatusReportAt(now); err != nil {
@@ -756,7 +779,7 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	model := w.resolveSpawnModelForBackend(ticketID, tk, spawnBackendType)
 
 	if w.dryRun {
-		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would spawn %s", ticketID))
+		_ = w.notifyInfo(ctx, fmt.Sprintf("[dry-run] would spawn %s", ticketID))
 		return nil
 	}
 
@@ -1573,7 +1596,7 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 
 	if w.dryRun {
 		for _, feature := range featureNames {
-			_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would create post-build tickets for feature %s", feature))
+			_ = w.notifyInfo(ctx, fmt.Sprintf("[dry-run] would create post-build tickets for feature %s", feature))
 		}
 		return nil
 	}
@@ -1587,7 +1610,7 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 		}
 		changed = true
 		msg := fmt.Sprintf("feature %s build complete — created %d post-build tickets", feature, created)
-		_ = w.notifier.Info(ctx, msg)
+		_ = w.notifyInfo(ctx, msg)
 		if err := w.appendEvent("post_build_generated", "", map[string]any{
 			"feature": feature,
 			"created": created,
