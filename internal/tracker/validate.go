@@ -67,7 +67,9 @@ func validateStrictTicket(id string, tk Ticket, errs *ValidationErrors) {
 	if strings.TrimSpace(id) == "" {
 		*errs = append(*errs, ValidationError{TicketID: id, Field: "id", Message: "is required"})
 	}
-	if tk.ID != "" && tk.ID != id {
+	if strings.TrimSpace(tk.ID) == "" {
+		*errs = append(*errs, ValidationError{TicketID: id, Field: "id", Message: "is required"})
+	} else if tk.ID != id {
 		*errs = append(*errs, ValidationError{TicketID: id, Field: "id", Message: "must match ticket key"})
 	}
 	if strings.TrimSpace(tk.Status) == "" {

@@ -8,6 +8,7 @@ import (
 
 func validV2Ticket() Ticket {
 	return Ticket{
+		ID:      "tp-01",
 		Status:  "todo",
 		Phase:   1,
 		Depends: []string{},
@@ -55,6 +56,7 @@ func TestValidateStrictAcceptsValidV2Ticket(t *testing.T) {
 func TestValidateStrictReportsMissingRequiredFields(t *testing.T) {
 	t.Parallel()
 	tk := validV2Ticket()
+	tk.ID = ""
 	tk.Role = ""
 	tk.Objective = " "
 	tk.ScopeIn = nil
@@ -74,6 +76,9 @@ func TestValidateStrictReportsMissingRequiredFields(t *testing.T) {
 
 	if !hasFieldError(errs, "tp-01", "role") {
 		t.Fatalf("expected role error, got %#v", errs)
+	}
+	if !hasFieldError(errs, "tp-01", "id") {
+		t.Fatalf("expected id error, got %#v", errs)
 	}
 	if !hasFieldError(errs, "tp-01", "objective") {
 		t.Fatalf("expected objective error, got %#v", errs)
@@ -115,6 +120,27 @@ func TestValidateStrictRejectsInvalidArraysAndCommands(t *testing.T) {
 	}
 	if !hasFieldError(errs, "tp-01", "verify_cmd") {
 		t.Fatalf("expected verify_cmd error, got %#v", errs)
+	}
+}
+
+func TestValidateStrictRejectsMismatchedTicketID(t *testing.T) {
+	t.Parallel()
+	tk := validV2Ticket()
+	tk.ID = "tp-02"
+
+	tr := New("proj", map[string]Ticket{"tp-01": tk})
+	err := tr.Validate(ValidationOptions{Strict: true})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	var errs ValidationErrors
+	if !errors.As(err, &errs) {
+		t.Fatalf("expected ValidationErrors, got %T", err)
+	}
+
+	if !hasFieldError(errs, "tp-01", "id") {
+		t.Fatalf("expected id mismatch error, got %#v", errs)
 	}
 }
 
