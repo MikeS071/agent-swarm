@@ -949,16 +949,22 @@ func (w *Watchdog) sessionHandleForTicket(ticketID string, tk tracker.Ticket) ba
 	return h
 }
 
-// projectRoot returns the project root directory (parent of swarm/).
+// projectRoot returns the repository root directory.
 func (w *Watchdog) projectRoot() string {
 	if w == nil || w.config == nil {
 		return ""
+	}
+	repo := strings.TrimSpace(w.config.Project.Repo)
+	if repo != "" {
+		if abs, err := filepath.Abs(repo); err == nil {
+			return abs
+		}
+		return repo
 	}
 	trackerPath := strings.TrimSpace(w.config.Project.Tracker)
 	if trackerPath == "" {
 		return ""
 	}
-	// Tracker is at swarm/tracker.json — go up two levels
 	return filepath.Dir(filepath.Dir(trackerPath))
 }
 
