@@ -163,7 +163,7 @@ func Default() *Config {
 			ParallelGroups: [][]string{{"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}},
 		},
 		StatusReport: StatusReportConfig{
-			Enabled:          false,
+			Enabled:          true,
 			Interval:         "5m",
 			OnlyWhenRunning:  true,
 			SendOnCompletion: true,
