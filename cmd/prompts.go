@@ -63,9 +63,8 @@ You are building a Go CLI called %q. Read SPEC.md for full spec.
 - Add or update tests first
 - Ensure build and tests pass
 
-## Notes
-- Add implementation details here
-- Add edge cases here
+## Verification
+- Run the ticket verification command(s) and capture failures before marking done
 `, strings.ToUpper(ticketID), ticket.Desc, t.Project, deps)
 
 	path := filepath.Join(promptDir, ticketID+".md")
