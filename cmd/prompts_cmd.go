@@ -42,30 +42,7 @@ var promptsCheckCmd = &cobra.Command{
 	},
 }
 
-var promptsGenCmd = &cobra.Command{
-	Use:          "gen <ticket>",
-	Short:        "Generate prompt template for a ticket",
-	Args:         cobra.ExactArgs(1),
-	SilenceUsage: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load(cfgFile)
-		if err != nil {
-			return err
-		}
-		trackerPath := resolveFromConfig(cfgFile, cfg.Project.Tracker)
-		promptDir := resolveFromConfig(cfgFile, cfg.Project.PromptDir)
-
-		path, err := GeneratePrompt(trackerPath, promptDir, args[0])
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), path)
-		return err
-	},
-}
-
 func init() {
 	promptsCmd.AddCommand(promptsCheckCmd)
-	promptsCmd.AddCommand(promptsGenCmd)
 	rootCmd.AddCommand(promptsCmd)
 }
