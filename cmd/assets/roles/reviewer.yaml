@@ -1,0 +1,9 @@
+role: reviewer
+profile: reviewer.md
+rules:
+  - base.md
+  - reviewer.md
+skills:
+  - coding-standards
+  - security-review
+  - tdd-workflow

@@ -238,3 +238,80 @@ func TestScaffoldProjectBootstrapsGitRepo(t *testing.T) {
 		t.Fatalf("expected initial commit, err=%v out=%s", err, string(out))
 	}
 }
+
+func TestInitScaffoldProjectAddsAgentkitByDefault(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "default-agentkit-project")
+
+	if err := scaffoldProject(root); err != nil {
+		t.Fatalf("scaffoldProject: %v", err)
+	}
+
+	requiredFiles := []string{
+		filepath.Join(root, ".agents", "profiles", "architect.md"),
+		filepath.Join(root, ".agents", "roles", "backend.yaml"),
+		filepath.Join(root, ".agents", "skills", "tdd-workflow", "SKILL.md"),
+		filepath.Join(root, ".codex", "rules", "base.md"),
+		filepath.Join(root, ".codex", "rules", "backend.md"),
+	}
+	for _, path := range requiredFiles {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s to exist: %v", path, err)
+		}
+	}
+}
+
+func TestInitScaffoldProjectSkipsAgentkitWhenDisabled(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "no-agentkit-project")
+
+	if err := scaffoldProjectWithOptions(root, false); err != nil {
+		t.Fatalf("scaffoldProjectWithOptions: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, ".agents")); !os.IsNotExist(err) {
+		t.Fatalf("expected .agents to be absent when --with-agentkit=false")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".codex")); !os.IsNotExist(err) {
+		t.Fatalf("expected .codex to be absent when --with-agentkit=false")
+	}
+	if _, err := os.Stat(filepath.Join(root, "swarm.toml")); err != nil {
+		t.Fatalf("expected swarm.toml to exist: %v", err)
+	}
+}
+
+func TestInitScaffoldProjectPreservesExistingAgentkitFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "existing-agentkit-project")
+	existingRole := filepath.Join(root, ".agents", "roles", "backend.yaml")
+	existingRule := filepath.Join(root, ".codex", "rules", "backend.md")
+	if err := os.MkdirAll(filepath.Dir(existingRole), 0o755); err != nil {
+		t.Fatalf("mkdir existing role dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(existingRule), 0o755); err != nil {
+		t.Fatalf("mkdir existing rule dir: %v", err)
+	}
+	if err := os.WriteFile(existingRole, []byte("role: backend\nowner: custom\n"), 0o644); err != nil {
+		t.Fatalf("write existing role: %v", err)
+	}
+	if err := os.WriteFile(existingRule, []byte("# backend override\n"), 0o644); err != nil {
+		t.Fatalf("write existing rule: %v", err)
+	}
+
+	if err := scaffoldProject(root); err != nil {
+		t.Fatalf("scaffoldProject: %v", err)
+	}
+
+	roleData, err := os.ReadFile(existingRole)
+	if err != nil {
+		t.Fatalf("read existing role: %v", err)
+	}
+	if string(roleData) != "role: backend\nowner: custom\n" {
+		t.Fatalf("existing role file should be preserved, got: %q", string(roleData))
+	}
+
+	ruleData, err := os.ReadFile(existingRule)
+	if err != nil {
+		t.Fatalf("read existing rule: %v", err)
+	}
+	if string(ruleData) != "# backend override\n" {
+		t.Fatalf("existing rule file should be preserved, got: %q", string(ruleData))
+	}
+}

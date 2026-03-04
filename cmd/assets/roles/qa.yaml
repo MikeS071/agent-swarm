@@ -1,0 +1,9 @@
+role: qa
+profile: qa.md
+rules:
+  - base.md
+  - qa.md
+skills:
+  - e2e-testing
+  - tdd-workflow
+  - verification-loop
