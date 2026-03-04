@@ -28,6 +28,7 @@ type Ticket struct {
 	Desc           string   `json:"desc,omitempty"`
 	Profile        string   `json:"profile,omitempty"`
 	VerifyCmd      string   `json:"verify_cmd,omitempty"`
+	Priority       int      `json:"priority,omitempty"`
 	SHA            string   `json:"sha,omitempty"`
 	StartedAt      string   `json:"startedAt,omitempty"`
 	FinishedAt     string   `json:"finishedAt,omitempty"`
@@ -152,6 +153,14 @@ func (t *Tracker) GetSpawnable() []string {
 			out = append(out, id)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		pi := t.Tickets[out[i]].Priority
+		pj := t.Tickets[out[j]].Priority
+		if pi == pj {
+			return out[i] < out[j]
+		}
+		return pi > pj
+	})
 	return out
 }
 

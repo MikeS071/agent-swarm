@@ -262,7 +262,14 @@ func (d *Dispatcher) spawnableInPhase(phase int) []string {
 			ids = append(ids, id)
 		}
 	}
-	sort.Strings(ids)
+	sort.Slice(ids, func(i, j int) bool {
+		pi := tickets[ids[i]].Priority
+		pj := tickets[ids[j]].Priority
+		if pi == pj {
+			return ids[i] < ids[j]
+		}
+		return pi > pj
+	})
 	return ids
 }
 
