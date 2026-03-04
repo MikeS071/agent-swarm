@@ -138,9 +138,9 @@ func (b *CodexBackend) wrapWithExitArtifact(baseCmd string, cfg SpawnConfig, log
 		if strings.TrimSpace(dir) != "" {
 			lines = append(lines, fmt.Sprintf("mkdir -p %s", shQuote(dir)))
 		}
-		py := "python3 -c " + shQuote(`import json,os; print(json.dumps({"ticket_id":os.getenv("TICKET_ID",""),"ended_at":os.getenv("ENDED_AT",""),"process_exit_code":int(os.getenv("EXIT_CODE","0") or 0),"log_path":os.getenv("LOG_PATH",""),"work_dir":os.getenv("WORK_DIR",""),"head_sha":os.getenv("HEAD_SHA","")}))`)
+		py := "python3 -c " + shQuote(`import json,os; print(json.dumps({"ticket_id":os.getenv("TICKET_ID",""),"ended_at":os.getenv("ENDED_AT",""),"process_exit_code":int(os.getenv("EXIT_CODE","0") or 0),"log_path":os.getenv("LOG_PATH",""),"work_dir":os.getenv("WORK_DIR",""),"head_sha":os.getenv("HEAD_SHA",""),"context_manifest_path":os.getenv("CONTEXT_MANIFEST_PATH","")}))`)
 		lines = append(lines,
-			fmt.Sprintf("TICKET_ID=%s ENDED_AT=\"$ended\" EXIT_CODE=\"$ec\" LOG_PATH=%s WORK_DIR=%s HEAD_SHA=\"$head_sha\" %s > %s", shQuote(cfg.TicketID), shQuote(logFile), shQuote(cfg.WorkDir), py, shQuote(cfg.ExitFile)),
+			fmt.Sprintf("TICKET_ID=%s ENDED_AT=\"$ended\" EXIT_CODE=\"$ec\" LOG_PATH=%s WORK_DIR=%s HEAD_SHA=\"$head_sha\" CONTEXT_MANIFEST_PATH=%s %s > %s", shQuote(cfg.TicketID), shQuote(logFile), shQuote(cfg.WorkDir), shQuote(cfg.ContextManifestPath), py, shQuote(cfg.ExitFile)),
 		)
 	}
 	lines = append(lines, "exit $ec")

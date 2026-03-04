@@ -9,12 +9,13 @@ import (
 )
 
 type exitMarker struct {
-	TicketID        string `json:"ticket_id"`
-	EndedAt         string `json:"ended_at"`
-	ProcessExitCode int    `json:"process_exit_code"`
-	LogPath         string `json:"log_path"`
-	WorkDir         string `json:"work_dir"`
-	HeadSHA         string `json:"head_sha"`
+	TicketID            string `json:"ticket_id"`
+	EndedAt             string `json:"ended_at"`
+	ProcessExitCode     int    `json:"process_exit_code"`
+	LogPath             string `json:"log_path"`
+	WorkDir             string `json:"work_dir"`
+	HeadSHA             string `json:"head_sha"`
+	ContextManifestPath string `json:"context_manifest_path"`
 }
 
 func (w *Watchdog) runtimeStateRoot() string {
@@ -54,7 +55,7 @@ func (w *Watchdog) ticketExitFile(ticketID string) string {
 	return filepath.Join(d, "exit.json")
 }
 
-func (w *Watchdog) writeSpawnMarker(ticketID string) {
+func (w *Watchdog) writeSpawnMarker(ticketID, contextManifestPath string) {
 	d := w.runtimeTicketDir(ticketID)
 	if d == "" {
 		return
@@ -66,6 +67,9 @@ func (w *Watchdog) writeSpawnMarker(ticketID string) {
 	payload := map[string]any{
 		"ticket_id":  ticketID,
 		"started_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	if strings.TrimSpace(contextManifestPath) != "" {
+		payload["context_manifest_path"] = strings.TrimSpace(contextManifestPath)
 	}
 	b, _ := json.Marshal(payload)
 	_ = os.WriteFile(spawnFile, b, 0o644)
