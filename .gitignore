@@ -18,3 +18,7 @@ agent-swarm
 !.decapod/generated/specs/
 !.decapod/generated/specs/*.md
 !.decapod/generated/specs/.manifest.json
+
+# swarm runtime artifacts
+.codex-prompt.md
+.agent-context/
