@@ -1,0 +1,17 @@
+# Reconstructed skeleton schema for guardian flow policy
+version: 2
+mode: advisory
+rules:
+  - id: prd_has_required_code_examples
+    enabled: true
+  - id: spec_has_api_and_schema_examples
+    enabled: true
+  - id: ticket_desc_has_scope_and_verify
+    enabled: true
+  - id: phase_has_int_gap_tst_chain
+    enabled: true
+enforcement_points:
+  - before_spawn
+  - before_mark_done
+  - transition
+  - post_build_complete
