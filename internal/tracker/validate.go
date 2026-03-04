@@ -7,7 +7,8 @@ import (
 )
 
 type ValidationOptions struct {
-	Strict bool
+	Strict       bool
+	AllowedRoles map[string]struct{}
 }
 
 type ValidationError struct {
@@ -49,7 +50,7 @@ func (t *Tracker) Validate(opts ValidationOptions) error {
 		errs = append(errs, ValidationError{Field: "project", Message: "is required"})
 	}
 	for id, tk := range t.Tickets {
-		validateStrictTicket(id, tk, &errs)
+		validateStrictTicket(id, tk, opts, &errs)
 	}
 	if len(errs) == 0 {
 		return nil
@@ -63,7 +64,7 @@ func (t *Tracker) Validate(opts ValidationOptions) error {
 	return errs
 }
 
-func validateStrictTicket(id string, tk Ticket, errs *ValidationErrors) {
+func validateStrictTicket(id string, tk Ticket, opts ValidationOptions, errs *ValidationErrors) {
 	if strings.TrimSpace(id) == "" {
 		*errs = append(*errs, ValidationError{TicketID: id, Field: "id", Message: "is required"})
 	}
@@ -83,11 +84,17 @@ func validateStrictTicket(id string, tk Ticket, errs *ValidationErrors) {
 	requiredString(id, "type", tk.Type, errs)
 	requiredString(id, "runId", tk.RunID, errs)
 	requiredString(id, "role", tk.Role, errs)
+	if strings.TrimSpace(tk.Role) != "" && len(opts.AllowedRoles) > 0 {
+		if _, ok := opts.AllowedRoles[tk.Role]; !ok {
+			*errs = append(*errs, ValidationError{TicketID: id, Field: "role", Message: "must resolve to a known role"})
+		}
+	}
 	requiredString(id, "desc", tk.Desc, errs)
 	requiredString(id, "objective", tk.Objective, errs)
 	validateStringSlice(id, "scope_in", tk.ScopeIn, 1, false, errs)
 	validateStringSlice(id, "scope_out", tk.ScopeOut, 1, false, errs)
 	validateStringSlice(id, "files_to_touch", tk.FilesToTouch, 1, true, errs)
+	validateStringSlice(id, "reference_files", tk.ReferenceFiles, 1, true, errs)
 	validateStringSlice(id, "implementation_steps", tk.ImplementationSteps, 2, false, errs)
 	validateStringSlice(id, "tests_to_add_or_update", tk.TestsToAddOrUpdate, 1, false, errs)
 	requiredVerifyCommand(id, tk.VerifyCmd, errs)

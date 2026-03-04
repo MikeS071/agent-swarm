@@ -60,6 +60,7 @@ func TestValidateStrictReportsMissingRequiredFields(t *testing.T) {
 	tk.Role = ""
 	tk.Objective = " "
 	tk.ScopeIn = nil
+	tk.ReferenceFiles = nil
 	tk.ImplementationSteps = []string{"Only one"}
 	tk.VerifyCmd = " "
 
@@ -86,6 +87,9 @@ func TestValidateStrictReportsMissingRequiredFields(t *testing.T) {
 	if !hasFieldError(errs, "tp-01", "scope_in") {
 		t.Fatalf("expected scope_in error, got %#v", errs)
 	}
+	if !hasFieldError(errs, "tp-01", "reference_files") {
+		t.Fatalf("expected reference_files error, got %#v", errs)
+	}
 	if !hasFieldError(errs, "tp-01", "implementation_steps") {
 		t.Fatalf("expected implementation_steps error, got %#v", errs)
 	}
@@ -98,6 +102,7 @@ func TestValidateStrictRejectsInvalidArraysAndCommands(t *testing.T) {
 	t.Parallel()
 	tk := validV2Ticket()
 	tk.ScopeOut = []string{""}
+	tk.ReferenceFiles = []string{"../invalid reference.md"}
 	tk.FilesToTouch = []string{"not-a-path-pattern"}
 	tk.VerifyCmd = "go test ./...\nrm -rf /"
 
@@ -114,6 +119,9 @@ func TestValidateStrictRejectsInvalidArraysAndCommands(t *testing.T) {
 
 	if !hasFieldError(errs, "tp-01", "scope_out[0]") {
 		t.Fatalf("expected scope_out[0] error, got %#v", errs)
+	}
+	if !hasFieldError(errs, "tp-01", "reference_files[0]") {
+		t.Fatalf("expected reference_files[0] error, got %#v", errs)
 	}
 	if !hasFieldError(errs, "tp-01", "files_to_touch[0]") {
 		t.Fatalf("expected files_to_touch[0] error, got %#v", errs)
@@ -168,5 +176,31 @@ func TestSaveToWithOptionsStrictToggle(t *testing.T) {
 	}
 	if err := legacy.SaveToWithOptions(base+".strict", ValidationOptions{Strict: true}); err == nil {
 		t.Fatal("expected strict save to fail for legacy ticket")
+	}
+}
+
+func TestValidateStrictChecksRolePresenceAgainstAllowedRoles(t *testing.T) {
+	t.Parallel()
+	tk := validV2Ticket()
+	tk.Role = "unknown-role"
+
+	tr := New("proj", map[string]Ticket{"tp-01": tk})
+	err := tr.Validate(ValidationOptions{
+		Strict: true,
+		AllowedRoles: map[string]struct{}{
+			"backend": {},
+			"qa":      {},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	var errs ValidationErrors
+	if !errors.As(err, &errs) {
+		t.Fatalf("expected ValidationErrors, got %T", err)
+	}
+	if !hasFieldError(errs, "tp-01", "role") {
+		t.Fatalf("expected role resolution error, got %#v", errs)
 	}
 }
