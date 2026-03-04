@@ -1,5 +1,6 @@
 [project]
 name = "agent-swarm"
+auto_approve = true
 repo = "."
 base_branch = "main"
 max_agents = 4
@@ -13,7 +14,10 @@ model = "gpt-5.3-codex"
 bypass_sandbox = true
 
 [notifications]
-type = "stdout"
+type = "telegram"
+telegram_chat_id = "1556514337"
+telegram_token = ""
+telegram_token_cmd = "pass show apis/telegram-bot-token"
 
 [watchdog]
 interval = "5m"
@@ -24,3 +28,15 @@ max_retries = 2
 [integration]
 verify_cmd = "go build ./..."
 audit_ticket = "sw-09"
+
+[status_report]
+enabled = true
+interval = "5m"
+only_when_running = true
+send_on_completion = true
+
+[post_build]
+order = ["int", "gap", "tst", "review", "sec", "doc", "clean", "mem"]
+parallel_groups = [["gap", "tst"], ["review", "sec"], ["doc", "clean"]]
+scope = "plan"
+plan_feature = "guardian"

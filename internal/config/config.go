@@ -63,6 +63,8 @@ type WatchdogConfig struct {
 type PostBuildConfig struct {
 	Order          []string   `toml:"order"`
 	ParallelGroups [][]string `toml:"parallel_groups"`
+	Scope          string     `toml:"scope"`
+	PlanFeature    string     `toml:"plan_feature"`
 }
 
 
@@ -162,6 +164,8 @@ func Default() *Config {
 		PostBuild: PostBuildConfig{
 			Order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
 			ParallelGroups: [][]string{{"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}},
+			Scope:          "per_feature",
+			PlanFeature:    "plan",
 		},
 		StatusReport: StatusReportConfig{
 			Enabled:          true,
@@ -199,6 +203,12 @@ func Load(path string) (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.StatusReport.Interval) == "" {
 		cfg.StatusReport.Interval = "5m"
+	}
+	if strings.TrimSpace(cfg.PostBuild.Scope) == "" {
+		cfg.PostBuild.Scope = "per_feature"
+	}
+	if strings.TrimSpace(cfg.PostBuild.PlanFeature) == "" {
+		cfg.PostBuild.PlanFeature = "plan"
 	}
 
 	// Normalize relative paths so config works regardless of current working directory.

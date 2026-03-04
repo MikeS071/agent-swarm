@@ -1573,6 +1573,14 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 		return nil
 	}
 
+	scope := strings.TrimSpace(w.config.PostBuild.Scope)
+	if scope == "" {
+		scope = "per_feature"
+	}
+	if scope == "plan" {
+		return w.ensurePlanPostBuildTickets(ctx, features, order, parallelGroups)
+	}
+
 	featureNames := make([]string, 0, len(features))
 	for feature, fs := range features {
 		if fs.BuildTotal == 0 || fs.BuildDone != fs.BuildTotal {
@@ -1611,18 +1619,62 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 		changed = true
 		msg := fmt.Sprintf("feature %s build complete — created %d post-build tickets", feature, created)
 		_ = w.notifyInfo(ctx, msg)
-		if err := w.appendEvent("post_build_generated", "", map[string]any{
-			"feature": feature,
-			"created": created,
-		}); err != nil {
+		if err := w.appendEvent("post_build_generated", "", map[string]any{"feature": feature, "created": created}); err != nil {
 			w.log("WARN: appendEvent(post_build_generated, %s): %v", feature, err)
 		}
 	}
-
 	if changed {
 		return w.saveTracker()
 	}
 	return nil
+}
+
+func (w *Watchdog) ensurePlanPostBuildTickets(ctx context.Context, features map[string]*buildFeatureStatus, order []string, parallelGroups [][]string) error {
+	if len(features) == 0 {
+		return nil
+	}
+	allDone := true
+	for _, fs := range features {
+		if fs.BuildTotal == 0 || fs.BuildDone != fs.BuildTotal {
+			allDone = false
+			break
+		}
+	}
+	if !allDone {
+		return nil
+	}
+	planFeature := strings.TrimSpace(w.config.PostBuild.PlanFeature)
+	if planFeature == "" {
+		planFeature = "plan"
+	}
+	fake := &buildFeatureStatus{PostBuildStepsSet: map[string]bool{}, MaxBuildPhase: 1}
+	for _, fs := range features {
+		if fs.MaxBuildPhase > fake.MaxBuildPhase { fake.MaxBuildPhase = fs.MaxBuildPhase }
+		fake.BuildIDs = append(fake.BuildIDs, fs.BuildIDs...)
+	}
+	sort.Strings(fake.BuildIDs)
+	for _, step := range order {
+		id := step + "-" + planFeature
+		if _, exists := w.tracker.Tickets[id]; exists {
+			fake.PostBuildStepsSet[step] = true
+		}
+	}
+	missing := false
+	for _, step := range order {
+		if !fake.PostBuildStepsSet[step] { missing = true; break }
+	}
+	if !missing { return nil }
+	if w.dryRun {
+		_ = w.notifyInfo(ctx, fmt.Sprintf("[dry-run] would create post-build tickets for plan %s", planFeature))
+		return nil
+	}
+	created := w.createPostBuildTicketsForFeature(planFeature, fake, order, parallelGroups)
+	if created == 0 { return nil }
+	_ = w.notifyInfo(ctx, fmt.Sprintf("build plan complete — created %d post-build tickets", created))
+	if err := w.appendEvent("post_build_generated", "", map[string]any{"feature": planFeature, "created": created, "scope": "plan"}); err != nil {
+		w.log("WARN: appendEvent(post_build_generated, %s): %v", planFeature, err)
+	}
+	return w.saveTracker()
 }
 
 func (w *Watchdog) postBuildPlan() ([]string, [][]string, bool) {
