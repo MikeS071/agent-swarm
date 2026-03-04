@@ -675,11 +675,10 @@ func TestAssemblePromptLayers(t *testing.T) {
 
 	cfg := &config.Config{
 		Project: config.ProjectConfig{
-			Name:           "test",
-			Tracker:        filepath.Join(tmp, "swarm", "tracker.json"),
-			PromptDir:      filepath.Join(tmp, "swarm", "prompts"),
-			SpecFile:       "SPEC.md",
-			DefaultProfile: "code-agent",
+			Name:      "test",
+			Tracker:   filepath.Join(tmp, "swarm", "tracker.json"),
+			PromptDir: filepath.Join(tmp, "swarm", "prompts"),
+			SpecFile:  "SPEC.md",
 		},
 	}
 
@@ -728,7 +727,7 @@ func TestAssemblePromptLayers(t *testing.T) {
 	}
 }
 
-func TestAssemblePromptTicketProfileOverridesDefault(t *testing.T) {
+func TestAssemblePromptTicketProfileSelection(t *testing.T) {
 	tmp := t.TempDir()
 
 	os.MkdirAll(filepath.Join(tmp, "swarm", "prompts"), 0o755)
@@ -739,10 +738,9 @@ func TestAssemblePromptTicketProfileOverridesDefault(t *testing.T) {
 
 	cfg := &config.Config{
 		Project: config.ProjectConfig{
-			Name:           "test",
-			Tracker:        filepath.Join(tmp, "swarm", "tracker.json"),
-			PromptDir:      filepath.Join(tmp, "swarm", "prompts"),
-			DefaultProfile: "code-agent",
+			Name:      "test",
+			Tracker:   filepath.Join(tmp, "swarm", "tracker.json"),
+			PromptDir: filepath.Join(tmp, "swarm", "prompts"),
 		},
 	}
 
@@ -753,7 +751,7 @@ func TestAssemblePromptTicketProfileOverridesDefault(t *testing.T) {
 	result := string(w.assemblePrompt(tk, []byte("task")))
 
 	if strings.Contains(result, "DEFAULT PROFILE") {
-		t.Error("should NOT contain default profile when ticket has explicit profile")
+		t.Error("should NOT contain fallback profile when ticket has explicit profile")
 	}
 	if !strings.Contains(result, "SECURITY PROFILE") {
 		t.Error("should contain ticket-level profile")

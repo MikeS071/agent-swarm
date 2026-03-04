@@ -36,7 +36,6 @@ type ProjectConfig struct {
 	AutoApprove         bool   `toml:"auto_approve"`
 	SpecFile            string `toml:"spec_file"`
 	FeaturesDir         string `toml:"features_dir"`
-	DefaultProfile      string `toml:"default_profile"`
 	RequireExplicitRole bool   `toml:"require_explicit_role"`
 	RequireVerifyCmd    bool   `toml:"require_verify_cmd"`
 }

@@ -33,7 +33,7 @@ At spawn time, each ticket prompt is assembled by `watchdog.assemblePrompt`:
 
 1. `AGENTS.md` (project governance)
 2. `project.spec_file` (optional)
-3. profile markdown (`ticket.profile` or `project.default_profile`)
+3. profile markdown (`ticket.profile`)
 4. ticket prompt file (`swarm/prompts/<ticket>.md`)
 5. `swarm/prompt-footer.md` (optional)
 
@@ -50,7 +50,6 @@ Output path in worktree: `.codex-prompt.md`.
 Notable project fields:
 - `auto_approve`
 - `spec_file`
-- `default_profile`
 
 ### `internal/tracker`
 

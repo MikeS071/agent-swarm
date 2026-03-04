@@ -16,28 +16,24 @@ func TestSelectProfileName(t *testing.T) {
 		name     string
 		ticketID string
 		ticket   tracker.Ticket
-		def      string
 		want     string
 	}{
 		{
 			name:     "explicit profile overrides inferred and default",
 			ticketID: "sec-auth",
 			ticket:   tracker.Ticket{Profile: "doc-updater"},
-			def:      "code-agent",
 			want:     "doc-updater",
 		},
 		{
 			name:     "empty when explicit missing",
 			ticketID: "sec-auth",
 			ticket:   tracker.Ticket{},
-			def:      "code-agent",
 			want:     "",
 		},
 		{
 			name:     "empty when no explicit inferred or default profile",
 			ticketID: "sw-01",
 			ticket:   tracker.Ticket{},
-			def:      "",
 			want:     "",
 		},
 	}
@@ -45,13 +41,7 @@ func TestSelectProfileName(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			w := &Watchdog{
-				config: &config.Config{
-					Project: config.ProjectConfig{
-						DefaultProfile: tc.def,
-					},
-				},
-			}
+			w := &Watchdog{config: &config.Config{}}
 			got := w.selectProfileName(tc.ticketID, tc.ticket)
 			if got != tc.want {
 				t.Fatalf("selectProfileName(%q) = %q, want %q", tc.ticketID, got, tc.want)

@@ -30,7 +30,6 @@ swarm add-ticket sw-02 --phase 1 --deps sw-01 --desc "status output"
 
 # 3) Create or generate prompts
 swarm prompts check
-swarm prompts gen sw-01
 
 # 4) Monitor status
 swarm status
@@ -55,7 +54,6 @@ swarm add-ticket <id> [--deps a,b] [--phase N] [--desc "..."]
 swarm prompts check
   Report todo tickets missing prompts
 
-swarm prompts gen <ticket>
   Generate prompt template for a ticket
 
 swarm status [--project NAME] [--json] [--compact] [--watch] [--live]
@@ -92,7 +90,7 @@ Global flag: `--config swarm.toml` (path to config file).
 
 1. `swarm init <project>` to scaffold project + agent assets.
 2. Add tickets with `swarm add-ticket` and dependencies/phases.
-3. Create prompts manually or with `swarm prompts gen`.
+3. Create implementation-ready prompts with `swarm prompts build --all`.
 4. Start orchestration with `swarm watch`.
 5. Review phase completion via `swarm status` / `swarm status --watch`.
 6. Approve gates with `swarm go` (CLI) or `A` (TUI), unless `project.auto_approve = true`.
@@ -115,7 +113,6 @@ tracker = "swarm/tracker.json"
 features_dir = "swarm/features"
 auto_approve = false
 spec_file = ""
-default_profile = ""
 
 [backend]
 type = "codex-tmux"
