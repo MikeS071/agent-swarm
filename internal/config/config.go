@@ -123,9 +123,10 @@ func Default() *Config {
 			BypassSandbox: true,
 		},
 		Notifications: NotificationsConfig{
-			Type:           "stdout",
-			TelegramChatID: "",
-			TelegramToken:  "",
+			Type:             "telegram",
+			TelegramChatID:   "1556514337",
+			TelegramToken:    "",
+			TelegramTokenCmd: "pass show apis/telegram-bot-token",
 		},
 		Watchdog: WatchdogConfig{
 			Interval:     "5m",
