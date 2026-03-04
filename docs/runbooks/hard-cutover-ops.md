@@ -86,3 +86,14 @@ swarm doctor
 ```
 
 If it fails, do not start `swarm watch`.
+
+
+## Scheduler mode
+
+`swarm install` now schedules `swarm watchdog run-all-once`, so every registered project is monitored each interval.
+
+Use dry-run audit across all projects:
+
+```bash
+swarm watchdog run-all-once --dry-run --json
+```

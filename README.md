@@ -46,7 +46,7 @@ swarm watch --once
 
 ```text
 swarm init <project>
-  Scaffold swarm.toml, swarm/tracker.json, swarm/prompts/, swarm/features/, swarm/logs/, and embedded assets
+  Scaffold project + run post-init compliance checks (prep/smoke/install watchdog)
 
 swarm add-ticket <id> [--deps a,b] [--phase N] [--desc "..."]
   Add ticket metadata to tracker
@@ -87,15 +87,18 @@ swarm cleanup [--older-than 24h]
 swarm serve [--port 8090] [--cors ORIGIN] [--auth-token TOKEN]
   Run HTTP API + SSE server
 
-swarm install [--user] [--interval 5m] [--uninstall]
-  Install/uninstall scheduled swarm watch execution (systemd/launchd/cron)
+swarm install [--interval 5m] [--uninstall]
+  Install/uninstall scheduled multi-project watchdog (systemd/launchd/cron)
+
+swarm watchdog run-all-once [--dry-run] [--json]
+  Execute one watchdog pass for every registered project
 ```
 
 Global flag: `--config swarm.toml` (path to config file).
 
 ## Operational Workflow (v2)
 
-1. `swarm init <project>` to scaffold project + agent assets.
+1. `swarm init <project>` to scaffold project + agent assets and verify prerequisites.
 2. Add tickets with `swarm add-ticket` and dependencies/phases.
 3. Create prompts for todo tickets (or use your ticket-prep pipeline) and validate with `swarm prep`.
 4. Start orchestration with `swarm watch`.

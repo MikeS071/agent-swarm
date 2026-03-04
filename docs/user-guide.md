@@ -28,9 +28,11 @@ mv swarm ~/.local/bin/
 ```bash
 cd ~/projects/my-app
 swarm init my-app
+# optional: skip automatic prereq checks
+# swarm init my-app --skip-prereq-checks
 ```
 
-This creates:
+This creates and validates:
 - `swarm.toml`
 - `swarm/tracker.json`
 - `swarm/prompts/`
@@ -278,3 +280,15 @@ Best practice:
 - dedupe by resolved `swarm.toml` path
 - skip repos without `swarm.toml`
 - let per-project completion marker prevent repeated ALL_DONE notifications
+
+
+### 15. Multi-project watchdog runner
+
+Run one pass across all registered projects:
+
+```bash
+swarm watchdog run-all-once
+swarm watchdog run-all-once --dry-run --json
+```
+
+`swarm install` configures scheduler entries to run this command (not single-project `watch --once`).
