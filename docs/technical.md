@@ -123,6 +123,11 @@ Main operations:
 - `CleanupOlderThan(duration)`
 - `HasCommits(ticketID, baseBranch)`
 
+### `cmd/watchdog_cmd.go`
+
+- `watchdog run-all-once` executes one pass for every project in registry (`projects.json`).
+- Used by scheduled installs so monitoring continues across all initialized projects.
+
 ### `internal/server`
 
 Provides HTTP API and SSE streams.
@@ -164,7 +169,7 @@ SSE event bus constants:
 - `swarm archive`
 - `swarm cleanup`
 - `swarm serve`
-- `swarm install`
+- `swarm install` (runs multi-project watchdog runner)
 
 Global flag: `--config`.
 

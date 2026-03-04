@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -17,20 +18,59 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var initSkipPrereqChecks bool
+
 var initCmd = &cobra.Command{
 	Use:   "init <project>",
 	Short: "Scaffold project swarm files with standard assets",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		project := args[0]
-		return scaffoldProject(project)
+		if err := scaffoldProject(project); err != nil {
+			return err
+		}
+		if initSkipPrereqChecks {
+			return nil
+		}
+		return ensureProjectPrerequisites(cmd.Context(), project)
 	},
 }
 
 func init() {
+	initCmd.Flags().BoolVar(&initSkipPrereqChecks, "skip-prereq-checks", false, "skip post-init compliance checks and watchdog install")
 	rootCmd.AddCommand(initCmd)
 }
 
+func ensureProjectPrerequisites(ctx context.Context, project string) error {
+	root := project
+	cfgPath := filepath.Join(root, "swarm.toml")
+	if _, err := os.Stat(cfgPath); err != nil {
+		return fmt.Errorf("post-init check: missing config %s", cfgPath)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("post-init check: load config: %w", err)
+	}
+	trackerPath := resolveFromConfig(cfgPath, cfg.Project.Tracker)
+	cfg.Project.Tracker = trackerPath
+	promptDir := resolveFromConfig(cfgPath, cfg.Project.PromptDir)
+	cfg.Project.PromptDir = promptDir
+
+	tr, err := loadTrackerWithFallback(cfg, trackerPath)
+	if err != nil {
+		return fmt.Errorf("post-init check: load tracker: %w", err)
+	}
+	if issues := runPrepChecks(cfg, tr, promptDir); len(issues) > 0 {
+		return fmt.Errorf("post-init check: prep failed with %d issue(s)", len(issues))
+	}
+	if err := runWatchWithConfigPath(ctx, cfgPath, "", true, true); err != nil {
+		return fmt.Errorf("post-init smoke pass failed: %w", err)
+	}
+	if err := ensureWatchdogInstalledForConfig(cfgPath); err != nil {
+		return fmt.Errorf("post-init watchdog install failed: %w", err)
+	}
+	return nil
+}
 
 func defaultStateDir(projectName string) (string, error) {
 	home, err := os.UserHomeDir()
