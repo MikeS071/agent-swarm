@@ -1,6 +1,7 @@
 [project]
 name = "agent-swarm"
 repo = "."
+state_dir = ".local/state"
 base_branch = "main"
 max_agents = 4
 min_ram_mb = 1024
