@@ -242,6 +242,14 @@ func (d *Dispatcher) spawnableInPhase(phase int) []string {
 		if tk.Status != tracker.StatusTodo {
 			continue
 		}
+		if d != nil && d.config != nil {
+			if d.config.Project.RequireExplicitRole && strings.TrimSpace(tk.Profile) == "" {
+				continue
+			}
+			if d.config.Project.RequireVerifyCmd && strings.TrimSpace(tk.VerifyCmd) == "" && strings.TrimSpace(d.config.Integration.VerifyCmd) == "" {
+				continue
+			}
+		}
 		ready := true
 		for _, dep := range tk.Depends {
 			dt, ok := d.tracker.Get(dep)
