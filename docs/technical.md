@@ -22,10 +22,12 @@ CLI (cmd/*)
 
 1. `watchdog.RunOnce` loads current tracker/config context.
 2. Running tickets are checked for exited/alive state via backend sessions.
-3. Exited tickets are classified as `done` (commit found) or retried/failed.
-4. Dispatcher evaluates signal (`spawn`, `PHASE_GATE`, `ALL_DONE`, `BLOCKED`).
-5. Spawnable tickets are launched up to capacity constraints.
-6. Tracker and `events.jsonl` are updated.
+3. Exited tickets are reconciled via runtime exit markers + backend checks.
+4. Completion requires meaningful diff + verify pass + guardian allow.
+5. Tickets become done/failed deterministically and events are recorded.
+6. Dispatcher evaluates signal (`spawn`, `PHASE_GATE`, `ALL_DONE`, `BLOCKED`).
+7. Spawnable tickets are launched up to capacity constraints.
+8. Tracker and `events.jsonl` are updated.
 
 ## v2 Prompt Assembly
 
@@ -57,7 +59,8 @@ Tracker JSON is the state source of truth.
 
 `Ticket` fields include:
 - `status`, `phase`, `depends`, `branch`, `desc`
-- `profile` (optional)
+- `profile` (explicit role, required in strict mode)
+- `verify_cmd`, `priority`
 - `sha`, `startedAt`, `finishedAt`
 
 Archive support:
@@ -77,6 +80,8 @@ Behavior:
 - Strict phase-sequential spawning.
 - Optional auto-approval via `project.auto_approve`.
 - Capacity checks include `max_agents` and RAM threshold.
+- Spawn ordering is priority-aware (`ticket.priority`), then lexical fallback.
+- `swarm plan optimize` computes throughput-oriented priorities from DAG structure.
 
 ### `internal/watchdog`
 
@@ -85,17 +90,19 @@ Responsibilities:
 - Retry failed exits without commits.
 - Mark tickets failed after retry limit.
 - Detect long-running tickets via `max_runtime`.
-- Persist JSONL events to `swarm/events.jsonl`.
+- Persist JSONL events to `<state_dir>/events.jsonl` and run retention maintenance.
 
-Watchdog event types emitted to JSONL:
+Watchdog event types emitted to JSONL include:
 - `ticket_done`
 - `respawn`
 - `ticket_failed`
+- `verify_failed_respawn`
 - `idle_spawn`
 - `phase_gate_auto_approved`
 - `phase_gate`
 - `project_complete`
 - `ticket_spawned`
+- `guardian_block`
 
 ### `internal/backend`
 
@@ -146,8 +153,11 @@ SSE event bus constants:
 
 - `swarm init`
 - `swarm add-ticket`
-- `swarm prompts check|gen`
+- `swarm prompts check`
 - `swarm status`
+- `swarm prep`
+- `swarm doctor`
+- `swarm plan optimize`
 - `swarm watch`
 - `swarm go`
 - `swarm integrate`
@@ -170,14 +180,19 @@ Global flag: `--config`.
   .codex/
     rules/
   swarm/
-    tracker.json
+    tracker.seed.json
     archive.json
-    events.jsonl
     prompt-footer.md
     prompts/
       <ticket>.md
     features/
-    logs/
+
+  .local/state/
+    tracker.json
+    events.jsonl
+    rollups/YYYY-MM-DD.json
+    runs/<ticket>/spawn.json
+    runs/<ticket>/exit.json
 
 <project>-worktrees/
   <ticket>/

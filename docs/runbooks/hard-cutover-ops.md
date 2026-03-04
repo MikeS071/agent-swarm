@@ -48,9 +48,10 @@ swarm prep --json
 ```
 2. Inspect latest events:
 ```bash
-tail -200 $(dirname $(yq '.project.tracker' swarm.toml 2>/dev/null || echo swarm/tracker.json))/events.jsonl
+tail -200 .local/state/events.jsonl  # or <state_dir>/events.jsonl
 ```
 3. Look for `guardian_block` and reason/rule/evidence.
+4. Run `swarm status --json` (it reconciles dead running sessions).
 
 ### B) Ticket fails verification
 1. Check ticket verify command in tracker (`verify_cmd`).
