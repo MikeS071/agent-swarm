@@ -24,6 +24,7 @@ func TestScaffoldProjectCreatesExpectedLayout(t *testing.T) {
 		filepath.Join(root, "swarm", "logs"),
 		filepath.Join(root, ".agents", "skills"),
 		filepath.Join(root, ".agents", "profiles"),
+		filepath.Join(root, ".agents", "roles"),
 		filepath.Join(root, ".codex", "rules"),
 	}
 	for _, dir := range requiredDirs {
@@ -248,15 +249,33 @@ func TestInitScaffoldProjectAddsAgentkitByDefault(t *testing.T) {
 
 	requiredFiles := []string{
 		filepath.Join(root, ".agents", "profiles", "architect.md"),
+		filepath.Join(root, ".agents", "roles", "architect.yaml"),
 		filepath.Join(root, ".agents", "roles", "backend.yaml"),
+		filepath.Join(root, ".agents", "roles", "qa.yaml"),
+		filepath.Join(root, ".agents", "roles", "reviewer.yaml"),
 		filepath.Join(root, ".agents", "skills", "tdd-workflow", "SKILL.md"),
 		filepath.Join(root, ".codex", "rules", "base.md"),
+		filepath.Join(root, ".codex", "rules", "architect.md"),
 		filepath.Join(root, ".codex", "rules", "backend.md"),
+		filepath.Join(root, ".codex", "rules", "qa.md"),
+		filepath.Join(root, ".codex", "rules", "reviewer.md"),
 	}
 	for _, path := range requiredFiles {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected %s to exist: %v", path, err)
 		}
+	}
+}
+
+func TestInitWithAgentkitFlagDefaultsToTrue(t *testing.T) {
+	t.Parallel()
+
+	flag := initCmd.Flags().Lookup("with-agentkit")
+	if flag == nil {
+		t.Fatalf("expected with-agentkit flag to be registered")
+	}
+	if flag.DefValue != "true" {
+		t.Fatalf("with-agentkit default = %q, want %q", flag.DefValue, "true")
 	}
 }
 
