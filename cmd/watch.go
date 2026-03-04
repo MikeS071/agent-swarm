@@ -15,6 +15,7 @@ import (
 var watchInterval string
 var watchOnce bool
 var watchDryRun bool
+var watchAllowUnprepared bool
 
 var watchCmd = &cobra.Command{
 	Use:   "watch",
@@ -37,8 +38,25 @@ var watchCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if issues := runPrepChecks(cfg, tr, promptDir); len(issues) > 0 {
-			return fmt.Errorf("prep gate failed: %d issue(s); run `agent-swarm prep`", len(issues))
+		prepIssues := runPrepPipeline(cfg, tr, promptDir)
+		if len(prepIssues) > 0 {
+			if !watchAllowUnprepared {
+				return fmt.Errorf("prep gate failed: %d issue(s); run `agent-swarm prep`", len(prepIssues))
+			}
+			if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: --allow-unprepared set; continuing despite prep failures (%d issue(s))\n", len(prepIssues)); err != nil {
+				return err
+			}
+			for i, issue := range prepIssues {
+				if i >= 5 {
+					if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: ... and %d more prep issue(s)\n", len(prepIssues)-i); err != nil {
+						return err
+					}
+					break
+				}
+				if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: [%s] %s [%s]: %s\n", issue.Step, issue.Ticket, issue.Field, issue.Reason); err != nil {
+					return err
+				}
+			}
 		}
 		d := dispatcher.New(cfg, tr)
 		wt := worktree.New(cfg.Project.Repo, "", cfg.Project.BaseBranch)
@@ -67,5 +85,6 @@ func init() {
 	watchCmd.Flags().StringVar(&watchInterval, "interval", "", "watchdog loop interval override (e.g. 5m)")
 	watchCmd.Flags().BoolVar(&watchOnce, "once", false, "run a single pass and exit")
 	watchCmd.Flags().BoolVar(&watchDryRun, "dry-run", false, "evaluate actions without executing")
+	watchCmd.Flags().BoolVar(&watchAllowUnprepared, "allow-unprepared", false, "bypass prep gate and continue with loud warnings")
 	rootCmd.AddCommand(watchCmd)
 }
