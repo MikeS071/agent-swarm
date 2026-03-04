@@ -25,6 +25,7 @@ type Config struct {
 type ProjectConfig struct {
 	Name           string `toml:"name"`
 	Repo           string `toml:"repo"`
+	StateDir       string `toml:"state_dir"`
 	BaseBranch     string `toml:"base_branch"`
 	MaxAgents      int    `toml:"max_agents"`
 	MinRAMMB       int    `toml:"min_ram_mb"`
@@ -97,6 +98,7 @@ func Default() *Config {
 		Project: ProjectConfig{
 			Name:        "myproject",
 			Repo:        ".",
+			StateDir:    "",
 			BaseBranch:  "main",
 			MaxAgents:   7,
 			MinRAMMB:    1024,
@@ -182,6 +184,7 @@ func Load(path string) (*Config, error) {
 
 	// Normalize relative paths so config works regardless of current working directory.
 	cfg.Project.Repo = resolveRelative(configDir, cfg.Project.Repo)
+	cfg.Project.StateDir = resolveRelative(configDir, cfg.Project.StateDir)
 	repoBase := cfg.Project.Repo
 	if repoBase == "" {
 		repoBase = configDir
@@ -190,6 +193,15 @@ func Load(path string) (*Config, error) {
 	cfg.Project.Tracker = resolveRelative(repoBase, cfg.Project.Tracker)
 	cfg.Project.FeaturesDir = resolveRelative(repoBase, cfg.Project.FeaturesDir)
 	cfg.Project.SpecFile = resolveRelative(repoBase, cfg.Project.SpecFile)
+
+	// If state_dir is configured and tracker is still the legacy repo-local
+	// default path, move tracker to state dir automatically.
+	if strings.TrimSpace(cfg.Project.StateDir) != "" {
+		legacyDefault := filepath.Clean(filepath.Join(repoBase, "swarm", "tracker.json"))
+		if filepath.Clean(cfg.Project.Tracker) == legacyDefault {
+			cfg.Project.Tracker = filepath.Join(cfg.Project.StateDir, "tracker.json")
+		}
+	}
 
 	// Profile paths are relative to project root.
 	cfg.Profiles.Architect = resolveRelative(repoBase, cfg.Profiles.Architect)

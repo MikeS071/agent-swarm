@@ -31,6 +31,15 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 }
 
+
+func defaultStateDir(projectName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "state", "agent-swarm", "projects", projectName), nil
+}
+
 func scaffoldProject(project string) error {
 	root := project
 	projectName := filepath.Base(filepath.Clean(project))
@@ -61,6 +70,17 @@ func scaffoldProject(project string) error {
 	// Write swarm.toml
 	cfg := config.Default()
 	cfg.Project.Name = projectName
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve project path: %w", err)
+	}
+	cfg.Project.Repo = absRoot
+	stateDir, err := defaultStateDir(projectName)
+	if err != nil {
+		return fmt.Errorf("resolve state dir: %w", err)
+	}
+	cfg.Project.StateDir = stateDir
+	cfg.Project.Tracker = filepath.Join(stateDir, "tracker.json")
 	if base := detectBaseBranch(root); strings.TrimSpace(base) != "" {
 		cfg.Project.BaseBranch = base
 	}
@@ -76,14 +96,29 @@ func scaffoldProject(project string) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 
-	// Write empty tracker
+	// Write empty runtime tracker to state dir
 	tr := &tracker.Tracker{
 		Project: projectName,
 		Tickets: map[string]tracker.Ticket{},
 	}
-	trackerPath := filepath.Join(root, cfg.Project.Tracker)
+	trackerPath := cfg.Project.Tracker
 	if err := tr.SaveTo(trackerPath); err != nil {
 		return err
+	}
+	// Write immutable seed tracker in repo for reproducible bootstrap
+	seedPath := filepath.Join(root, "swarm", "tracker.seed.json")
+	if err := tr.SaveTo(seedPath); err != nil {
+		return fmt.Errorf("write tracker seed: %w", err)
+	}
+	// Ensure runtime events file exists in state dir
+	eventsPath := filepath.Join(cfg.Project.StateDir, "events.jsonl")
+	if err := os.MkdirAll(filepath.Dir(eventsPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir state dir: %w", err)
+	}
+	if _, err := os.Stat(eventsPath); os.IsNotExist(err) {
+		if err := os.WriteFile(eventsPath, []byte{}, 0o644); err != nil {
+			return fmt.Errorf("write events log: %w", err)
+		}
 	}
 
 	// Copy embedded assets
@@ -121,14 +156,15 @@ func scaffoldProject(project string) error {
 		return fmt.Errorf("git bootstrap: %w", err)
 	}
 
-	if err := registerProjectInRegistry(projectName, root); err != nil {
+	if err := registerProjectInRegistry(projectName, root, cfg.Project.Tracker, cfg.Project.PromptDir); err != nil {
 		return fmt.Errorf("register project: %w", err)
 	}
 
 	fmt.Printf("✅ Initialized %s\n", projectName)
-	fmt.Printf("   swarm.toml + tracker.json\n")
+	fmt.Printf("   swarm.toml + state tracker (%s)\n", cfg.Project.Tracker)
 	fmt.Printf("   %d asset files (AGENTS.md, skills, profiles, rules)\n", copied)
 	fmt.Printf("   swarm/features/ — feature lifecycle directory\n")
+	fmt.Printf("   swarm/tracker.seed.json — immutable seed tracker\n")
 	if len(archived) > 0 {
 		fmt.Printf("   archived legacy workflow files: %s\n", strings.Join(archived, ", "))
 	}
@@ -235,7 +271,7 @@ func projectsRegistryPath() (string, error) {
 	return filepath.Join(home, ".openclaw", "workspace", "swarm", "projects.json"), nil
 }
 
-func registerProjectInRegistry(projectName, root string) error {
+func registerProjectInRegistry(projectName, root, trackerPath, promptDir string) error {
 	registryPath, err := projectsRegistryPath()
 	if err != nil {
 		return err
@@ -246,6 +282,10 @@ func registerProjectInRegistry(projectName, root string) error {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return fmt.Errorf("resolve project path: %w", err)
+	}
+	absPromptDir := promptDir
+	if !filepath.IsAbs(absPromptDir) {
+		absPromptDir = filepath.Join(absRoot, promptDir)
 	}
 
 	registry := map[string]projectRegistryEntry{}
@@ -262,8 +302,8 @@ func registerProjectInRegistry(projectName, root string) error {
 	registry[projectName] = projectRegistryEntry{
 		Description: fmt.Sprintf("%s project", projectName),
 		Repo:        absRoot,
-		Tracker:     "swarm/tracker.json",
-		PromptDir:   "swarm/prompts",
+		Tracker:     trackerPath,
+		PromptDir:   absPromptDir,
 	}
 
 	out, err := json.MarshalIndent(registry, "", "  ")

@@ -32,8 +32,8 @@ func TestScaffoldProjectCreatesExpectedLayout(t *testing.T) {
 		}
 	}
 
-	if _, err := os.Stat(filepath.Join(root, "swarm", "tracker.json")); err != nil {
-		t.Fatalf("expected tracker.json to exist: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "swarm", "tracker.seed.json")); err != nil {
+		t.Fatalf("expected tracker.seed.json to exist: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "AGENTS.md")); err != nil {
 		t.Fatalf("expected AGENTS.md to exist: %v", err)
@@ -45,6 +45,9 @@ func TestScaffoldProjectCreatesExpectedLayout(t *testing.T) {
 	}
 	if cfg.Project.Name != "my-project" {
 		t.Fatalf("project name = %q, want %q", cfg.Project.Name, "my-project")
+	}
+	if _, err := os.Stat(cfg.Project.Tracker); err != nil {
+		t.Fatalf("expected state tracker to exist at %s: %v", cfg.Project.Tracker, err)
 	}
 }
 
@@ -198,11 +201,12 @@ func TestScaffoldProjectRegistersProjectInOpenClawRegistry(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected my-reg-project in registry")
 	}
-	if got, _ := entry["tracker"].(string); got != "swarm/tracker.json" {
-		t.Fatalf("tracker=%q want swarm/tracker.json", got)
+	expectedTrackerSuffix := filepath.Join(".local", "state", "agent-swarm", "projects", "my-reg-project", "tracker.json")
+	if got, _ := entry["tracker"].(string); !strings.HasSuffix(got, expectedTrackerSuffix) {
+		t.Fatalf("tracker=%q want suffix %q", got, expectedTrackerSuffix)
 	}
-	if got, _ := entry["promptDir"].(string); got != "swarm/prompts" {
-		t.Fatalf("promptDir=%q want swarm/prompts", got)
+	if got, _ := entry["promptDir"].(string); got != filepath.Join(root, "swarm", "prompts") {
+		t.Fatalf("promptDir=%q want %q", got, filepath.Join(root, "swarm", "prompts"))
 	}
 }
 

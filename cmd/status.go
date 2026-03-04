@@ -35,7 +35,8 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		tr, err := tracker.Load(resolveFromConfig(cfgFile, cfg.Project.Tracker))
+		trackerPath := resolveFromConfig(cfgFile, cfg.Project.Tracker)
+		tr, err := loadTrackerWithFallback(cfg, trackerPath)
 		if err != nil {
 			return err
 		}
@@ -150,7 +151,7 @@ func colorStatus(status string) string {
 func runLiveStatus(cfgFile string, cfg *config.Config) error {
 	trackerPath := resolveFromConfig(cfgFile, cfg.Project.Tracker)
 	for {
-		tr, err := tracker.Load(trackerPath)
+		tr, err := loadTrackerWithFallback(cfg, trackerPath)
 		if err != nil {
 			return err
 		}

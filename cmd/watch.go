@@ -5,7 +5,6 @@ import (
 
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
-	"github.com/MikeS071/agent-swarm/internal/tracker"
 	"github.com/MikeS071/agent-swarm/internal/watchdog"
 	"github.com/MikeS071/agent-swarm/internal/worktree"
 	"github.com/spf13/cobra"
@@ -32,7 +31,7 @@ var watchCmd = &cobra.Command{
 		promptDir := resolveFromConfig(cfgFile, cfg.Project.PromptDir)
 		cfg.Project.PromptDir = promptDir
 
-		tr, err := tracker.Load(trackerPath)
+		tr, err := loadTrackerWithFallback(cfg, trackerPath)
 		if err != nil {
 			return err
 		}
