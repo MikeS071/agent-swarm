@@ -556,6 +556,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	if err := w.maybeSendStatusReport(ctx, sig); err != nil {
 		w.log("WARN: status report: %v", err)
 	}
+	w.runTelemetryMaintenance(time.Now().UTC())
 
 	return nil
 }
