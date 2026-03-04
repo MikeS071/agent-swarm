@@ -685,7 +685,7 @@ func TestAssemblePromptLayers(t *testing.T) {
 
 	w := &Watchdog{config: cfg}
 
-	tk := tracker.Ticket{Profile: ""}
+	tk := tracker.Ticket{Profile: "code-agent"}
 	ticketPrompt := []byte("# mc-01\n\nImplement the thing")
 
 	result := string(w.assemblePrompt(tk, ticketPrompt))
@@ -1135,12 +1135,6 @@ func TestAssemblePromptReviewOutputSuffix(t *testing.T) {
 			ticketProfile: "code-agent",
 			wantSuffix:    false,
 		},
-		{
-			name:           "default security reviewer profile",
-			defaultProfile: "security-reviewer",
-			wantSuffix:     true,
-			wantPath:       "swarm/features/<feature>/sec-report.json",
-		},
 	}
 
 	for _, tc := range tests {
@@ -1152,10 +1146,9 @@ func TestAssemblePromptReviewOutputSuffix(t *testing.T) {
 
 			cfg := &config.Config{
 				Project: config.ProjectConfig{
-					Name:           "test",
-					Tracker:        filepath.Join(tmp, "swarm", "tracker.json"),
-					PromptDir:      filepath.Join(tmp, "swarm", "prompts"),
-					DefaultProfile: tc.defaultProfile,
+					Name:      "test",
+					Tracker:   filepath.Join(tmp, "swarm", "tracker.json"),
+					PromptDir: filepath.Join(tmp, "swarm", "prompts"),
 				},
 			}
 			w := &Watchdog{config: cfg}

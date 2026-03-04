@@ -27,18 +27,11 @@ func TestSelectProfileName(t *testing.T) {
 			want:     "doc-updater",
 		},
 		{
-			name:     "prefix inferred profile when explicit missing",
+			name:     "empty when explicit missing",
 			ticketID: "sec-auth",
 			ticket:   tracker.Ticket{},
 			def:      "code-agent",
-			want:     "security-reviewer",
-		},
-		{
-			name:     "default profile fallback when no prefix mapping",
-			ticketID: "sw-01",
-			ticket:   tracker.Ticket{},
-			def:      "code-agent",
-			want:     "code-agent",
+			want:     "",
 		},
 		{
 			name:     "empty when no explicit inferred or default profile",
@@ -147,17 +140,17 @@ func TestResolveSpawnModel(t *testing.T) {
 			want:     "gpt-5.3-codex",
 		},
 		{
-			name:     "uses inferred profile when explicit profile absent",
+			name:     "falls back when explicit profile absent",
 			ticketID: "sec-auth",
 			ticket:   tracker.Ticket{},
 			want:     "gpt-5.3-codex",
 		},
 		{
-			name:       "allows non-codex model for non-codex backend",
+			name:       "non-codex backend without explicit profile still uses default model",
 			ticketID:   "sec-auth",
 			ticket:     tracker.Ticket{},
 			backendTyp: "claude-cli",
-			want:       "sonnet",
+			want:       "gpt-5.3-codex",
 		},
 	}
 
@@ -171,9 +164,8 @@ func TestResolveSpawnModel(t *testing.T) {
 			w := &Watchdog{
 				config: &config.Config{
 					Project: config.ProjectConfig{
-						Tracker:        filepath.Join(root, "swarm", "tracker.json"),
-						PromptDir:      filepath.Join(root, "swarm", "prompts"),
-						DefaultProfile: "code-agent",
+						Tracker:   filepath.Join(root, "swarm", "tracker.json"),
+						PromptDir: filepath.Join(root, "swarm", "prompts"),
 					},
 					Backend: config.BackendConfig{
 						Type:   backendType,
@@ -207,13 +199,12 @@ func TestSpawnTicketUsesResolvedModelFromProfileFrontmatter(t *testing.T) {
 
 	cfg := &config.Config{
 		Project: config.ProjectConfig{
-			Name:           "proj",
-			Repo:           repo,
-			BaseBranch:     "main",
-			PromptDir:      promptDir,
-			Tracker:        trackerPath,
-			DefaultProfile: "code-agent",
-			MaxAgents:      1,
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
 		},
 		Backend: config.BackendConfig{
 			Type:   "codex-tmux",
