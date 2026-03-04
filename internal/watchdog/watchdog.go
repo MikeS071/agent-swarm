@@ -18,6 +18,9 @@ import (
 	"github.com/MikeS071/agent-swarm/internal/backend"
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
+	guardianengine "github.com/MikeS071/agent-swarm/internal/guardian/engine"
+	guardierevidence "github.com/MikeS071/agent-swarm/internal/guardian/evidence"
+	guardianschema "github.com/MikeS071/agent-swarm/internal/guardian/schema"
 	"github.com/MikeS071/agent-swarm/internal/notify"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
 	"github.com/MikeS071/agent-swarm/internal/worktree"
@@ -139,6 +142,7 @@ type Watchdog struct {
 	worktree   *worktree.Manager
 	notifier   notify.Notifier
 	events     *EventLog
+	guardianEvents *guardierevidence.EventWriter
 
 	backendFactory func(backendType string) (backend.AgentBackend, error)
 	backendCache   map[string]backend.AgentBackend
@@ -172,8 +176,10 @@ func New(
 		d = dispatcher.New(cfg, tr)
 	}
 	eventsPath := ""
+	guardianEventsPath := ""
 	if cfg != nil && strings.TrimSpace(cfg.Project.Tracker) != "" {
 		eventsPath = filepath.Join(filepath.Dir(cfg.Project.Tracker), "events.jsonl")
+		guardianEventsPath = filepath.Join(filepath.Dir(cfg.Project.Tracker), "guardian-events.jsonl")
 	}
 
 	cache := map[string]backend.AgentBackend{}
@@ -193,6 +199,7 @@ func New(
 		worktree:     wt,
 		notifier:     n,
 		events:       NewEventLog(eventsPath),
+		guardianEvents: guardierevidence.NewEventWriter(guardianEventsPath),
 		backendCache: cache,
 		retries:      map[string]int{},
 		spawnErrors:  map[string]int{},
@@ -269,6 +276,9 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	if w.backend == nil || w.tracker == nil || w.dispatcher == nil || w.worktree == nil {
 		return fmt.Errorf("watchdog dependencies are not initialized")
 	}
+
+	// G1: advisory-only guardian checks for flow schema validity.
+	w.runGuardianAdvisory()
 
 	// Re-read auto_approve from config file (TUI 'm' key writes to swarm.toml).
 	if w.configPath != "" {
@@ -505,6 +515,41 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (w *Watchdog) runGuardianAdvisory() {
+	if w == nil || w.config == nil {
+		return
+	}
+	flowPath := filepath.Join(strings.TrimSpace(w.config.Project.Repo), "swarm", "flow.v2.yaml")
+	if strings.TrimSpace(w.config.Project.Repo) == "" {
+		return
+	}
+	if _, err := os.Stat(flowPath); os.IsNotExist(err) {
+		return
+	}
+
+	target := "project:" + strings.TrimSpace(w.config.Project.Name)
+	if target == "project:" {
+		target = "project:unknown"
+	}
+
+	check := guardianengine.Check{
+		Rule:   "flow_schema_valid",
+		Passed: true,
+		Reason: "flow schema valid",
+		Target: target,
+	}
+	if _, err := guardianschema.Load(flowPath); err != nil {
+		check.Passed = false
+		check.Reason = err.Error()
+	}
+
+	for _, decision := range guardianengine.Evaluate(guardianengine.ModeAdvisory, []guardianengine.Check{check}) {
+		if err := w.guardianEvents.AppendDecision(decision); err != nil {
+			w.log("WARN: append guardian decision: %v", err)
+		}
+	}
 }
 
 func (w *Watchdog) maybeSendStatusReport(ctx context.Context, sig dispatcher.Signal) error {

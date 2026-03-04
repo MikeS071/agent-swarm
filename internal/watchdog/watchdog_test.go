@@ -529,6 +529,134 @@ func TestEventLogAppendJSONL(t *testing.T) {
 	}
 }
 
+func TestRunOnceGuardianAdvisoryWritesEventsForValidFlow(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	trackerPath := filepath.Join(repo, "swarm", "tracker.json")
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-01": {Status: tracker.StatusDone, Phase: 1, Branch: "feat/sw-01"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	writeFile(t, filepath.Join(repo, "swarm", "flow.v2.yaml"), `
+version: 1
+name: default-v2-flow
+modes:
+  default: advisory
+state:
+  initial: draft
+  terminal: [complete]
+phases:
+  - id: planning
+    states: [draft, planned]
+transitions:
+  - from: draft
+    to: planned
+    requires:
+      rules:
+        - type: ticket_desc_has_scope_and_verify
+`)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  filepath.Join(repo, "swarm", "prompts"),
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	guardianEvents := filepath.Join(filepath.Dir(trackerPath), "guardian-events.jsonl")
+	b, err := os.ReadFile(guardianEvents)
+	if err != nil {
+		t.Fatalf("read guardian events: %v", err)
+	}
+	body := strings.TrimSpace(string(b))
+	if body == "" {
+		t.Fatalf("expected guardian events in %s", guardianEvents)
+	}
+	if !strings.Contains(body, `"rule":"flow_schema_valid"`) {
+		t.Fatalf("expected flow_schema_valid event, got: %s", body)
+	}
+}
+
+func TestRunOnceGuardianInvalidFlowWarnsWithoutBlocking(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	trackerPath := filepath.Join(repo, "swarm", "tracker.json")
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-01": {Status: tracker.StatusDone, Phase: 1, Branch: "feat/sw-01"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	writeFile(t, filepath.Join(repo, "swarm", "flow.v2.yaml"), `
+version: 1
+name: bad-flow
+modes:
+  default: advisory
+state:
+  initial: draft
+  terminal: [complete]
+phases:
+  - id: planning
+    states: [draft, planned]
+transitions:
+  - from: draft
+    to: planned
+    requires:
+      rules:
+        - type: unknown_rule
+`)
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  filepath.Join(repo, "swarm", "prompts"),
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once should not block in advisory mode, got: %v", err)
+	}
+
+	guardianEvents := filepath.Join(filepath.Dir(trackerPath), "guardian-events.jsonl")
+	b, err := os.ReadFile(guardianEvents)
+	if err != nil {
+		t.Fatalf("read guardian events: %v", err)
+	}
+	body := strings.TrimSpace(string(b))
+	if !strings.Contains(body, `"rule":"flow_schema_valid"`) {
+		t.Fatalf("expected flow_schema_valid event, got: %s", body)
+	}
+	if !strings.Contains(body, `"result":"WARN"`) {
+		t.Fatalf("expected WARN result for invalid flow, got: %s", body)
+	}
+}
+
 func TestWatchdogHelpers(t *testing.T) {
 	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
 		"sw-01": {Status: tracker.StatusRunning, StartedAt: time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339)},
