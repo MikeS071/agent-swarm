@@ -1028,39 +1028,8 @@ func loadPromptFooter(promptDir string) []byte {
 	return []byte(defaultPromptFooter)
 }
 
-func (w *Watchdog) selectProfileName(ticketID string, tk tracker.Ticket) string {
-	if profile := strings.TrimSpace(tk.Profile); profile != "" {
-		return profile
-	}
-	if inferred := inferProfileFromTicketID(ticketID); inferred != "" {
-		return inferred
-	}
-	if w == nil || w.config == nil {
-		return ""
-	}
-	return strings.TrimSpace(w.config.Project.DefaultProfile)
-}
-
-func inferProfileFromTicketID(ticketID string) string {
-	id := strings.ToLower(strings.TrimSpace(ticketID))
-	switch {
-	case strings.HasPrefix(id, "arch-"), strings.HasPrefix(id, "arc-"):
-		return "architect"
-	case strings.HasPrefix(id, "gap-"), strings.HasPrefix(id, "review-"), strings.HasPrefix(id, "rev-"), strings.HasPrefix(id, "mem-"):
-		return "code-reviewer"
-	case strings.HasPrefix(id, "sec-"):
-		return "security-reviewer"
-	case strings.HasPrefix(id, "tst-"):
-		return "e2e-runner"
-	case strings.HasPrefix(id, "doc-"):
-		return "doc-updater"
-	case strings.HasPrefix(id, "clean-"), strings.HasPrefix(id, "cln-"):
-		return "refactor-cleaner"
-	case strings.HasPrefix(id, "fix-"):
-		return "code-agent"
-	default:
-		return ""
-	}
+func (w *Watchdog) selectProfileName(_ string, tk tracker.Ticket) string {
+	return strings.TrimSpace(tk.Profile)
 }
 
 func (w *Watchdog) resolveSpawnModel(ticketID string, tk tracker.Ticket) string {
