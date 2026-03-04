@@ -1,17 +1,157 @@
-# Reconstructed skeleton schema for guardian flow policy
+# Flow Guardian policy schema (v2) — concrete, machine-evaluable format
+#
+# Notes:
+# - This file is the POLICY format the engine should parse.
+# - Keep deterministic checks only (no non-deterministic external calls).
+# - Paths are relative to project root unless absolute.
+
 version: 2
-mode: advisory
-rules:
-  - id: prd_has_required_code_examples
-    enabled: true
-  - id: spec_has_api_and_schema_examples
-    enabled: true
-  - id: ticket_desc_has_scope_and_verify
-    enabled: true
-  - id: phase_has_int_gap_tst_chain
-    enabled: true
+
+mode: advisory # advisory | enforce
+
+settings:
+  fail_closed: false          # if true: parser/check errors become BLOCK in enforce mode
+  cache_ttl_seconds: 30       # cache expensive checks in watchdog loops
+  max_evidence_bytes: 262144  # per evidence artifact
+
 enforcement_points:
   - before_spawn
   - before_mark_done
   - transition
   - post_build_complete
+
+# Optional per-rule overrides by context
+contexts:
+  default:
+    severity: block # warn | block
+
+# Rules are evaluated independently; highest outcome wins (BLOCK > WARN > ALLOW)
+rules:
+  - id: prd_has_required_code_examples
+    enabled: true
+    description: PRD must include at least N fenced code blocks and required sections.
+    severity: block
+    enforcement_points: [transition]
+    target:
+      kind: file
+      paths: ["docs/prd/*.md", "PRD.md"]
+      match: any  # any | all
+    check:
+      type: markdown_requirements
+      params:
+        required_headings: ["## Objective", "## Scope", "## Acceptance Criteria"]
+        min_fenced_code_blocks: 2
+    pass_when:
+      op: all
+      conditions:
+        - metric: headings_present
+          equals: true
+        - metric: fenced_code_blocks
+          gte: 2
+    fail_reason: "PRD missing required headings or code examples"
+    evidence:
+      kind: json
+      path: "evidence/prd_has_required_code_examples-{target}.json"
+
+  - id: spec_has_api_and_schema_examples
+    enabled: true
+    description: Build spec must include API example(s) and schema example(s).
+    severity: block
+    enforcement_points: [transition, post_build_complete]
+    target:
+      kind: file
+      paths: ["docs/**/*SPEC*.md", "**/*BUILD-SPEC*.md"]
+      match: any
+    check:
+      type: markdown_requirements
+      params:
+        required_keywords_any:
+          - ["curl", "HTTP", "endpoint"]
+          - ["schema", "yaml", "json"]
+        min_fenced_code_blocks: 2
+    pass_when:
+      op: all
+      conditions:
+        - metric: keyword_groups_matched
+          gte: 2
+        - metric: fenced_code_blocks
+          gte: 2
+    fail_reason: "Spec missing API/schema examples"
+    evidence:
+      kind: json
+      path: "evidence/spec_has_api_and_schema_examples-{target}.json"
+
+  - id: ticket_desc_has_scope_and_verify
+    enabled: true
+    description: Every actionable ticket must define Scope and Verify command.
+    severity: block
+    enforcement_points: [before_spawn]
+    target:
+      kind: ticket
+      source: "swarm/tracker.json"
+      fields: ["objective", "scope", "verify"]
+    check:
+      type: ticket_fields
+      params:
+        required_fields: ["objective", "scope", "verify"]
+        verify_regex: "^(go test|go build|make|npm test|pnpm test|pytest).+"
+    pass_when:
+      op: all
+      conditions:
+        - metric: required_fields_present
+          equals: true
+        - metric: verify_matches
+          equals: true
+    fail_reason: "Ticket missing scope and/or valid verify command"
+    evidence:
+      kind: json
+      path: "evidence/ticket_desc_has_scope_and_verify-{ticket}.json"
+
+  - id: phase_has_int_gap_tst_chain
+    enabled: true
+    description: Each phase must include integration, gap, and test tickets in dependency chain.
+    severity: block
+    enforcement_points: [transition]
+    target:
+      kind: phase
+      source: "swarm/tracker.json"
+    check:
+      type: phase_chain
+      params:
+        required_kinds: ["int", "gap", "tst"]
+        dependency_order: ["int", "gap", "tst"]
+        naming_patterns:
+          int: "^int-"
+          gap: "^gap-"
+          tst: "^tst-"
+    pass_when:
+      op: all
+      conditions:
+        - metric: required_kinds_present
+          equals: true
+        - metric: dependency_order_valid
+          equals: true
+    fail_reason: "Phase missing int→gap→tst chain"
+    evidence:
+      kind: json
+      path: "evidence/phase_has_int_gap_tst_chain-{phase}.json"
+
+# Optional, auditable overrides (human-only)
+overrides:
+  enabled: true
+  require_reason: true
+  require_expiry: true
+  max_duration_hours: 24
+  store: "approvals.json"
+
+# Reporter output contract
+events:
+  file: "guardian-events.jsonl"
+  include:
+    - timestamp
+    - enforcement_point
+    - rule_id
+    - result
+    - reason
+    - target
+    - evidence_path
