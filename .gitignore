@@ -22,3 +22,11 @@ agent-swarm
 # swarm runtime artifacts
 .codex-prompt.md
 .agent-context/
+
+# runtime state (outside git)
+.local/state/
+swarm/tracker.json
+swarm/tracker.json.lock
+swarm/events.jsonl
+swarm/rollups/
+swarm/watchdog.log
