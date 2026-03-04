@@ -30,3 +30,6 @@ swarm/tracker.json.lock
 swarm/events.jsonl
 swarm/rollups/
 swarm/watchdog.log
+
+# local project runtime/scratch
+.local/
