@@ -249,6 +249,55 @@ func (w *Watchdog) SetGuardian(g guardian.Evaluator) {
 }
 
 // Run executes the watchdog loop at configured interval until ctx cancellation.
+func (w *Watchdog) ReconcileRunning(ctx context.Context) error {
+	if w == nil || w.tracker == nil {
+		return nil
+	}
+	for _, ticketID := range runningTicketIDs(w.tracker) {
+		tk := w.tracker.Tickets[ticketID]
+		handle := w.sessionHandleForTicket(ticketID, tk)
+		runningBackend, _, err := w.runtimeBackendForTicket(tk)
+		if err != nil {
+			continue
+		}
+		exitMeta, hasExitMarker := w.readExitMarker(ticketID)
+		if !(hasExitMarker || runningBackend.HasExited(handle)) {
+			continue
+		}
+		hasCommits, sha, err := w.worktree.HasCommits(ticketID, w.config.Project.BaseBranch)
+		if err != nil {
+			hasCommits = false
+		}
+		if hasCommits {
+			gdec, _ := w.guardianCheck(ctx, guardian.EventBeforeMarkDone, ticketID, tk)
+			if gdec.Result == guardian.ResultBlock {
+				_ = w.dispatcher.MarkFailed(ticketID)
+				_ = w.saveTracker()
+				continue
+			}
+			if ok, _ := w.verifyTicket(ticketID, tk); ok {
+				_, _ = w.dispatcher.MarkDone(ticketID, sha)
+				delete(w.retries, ticketID)
+				d := map[string]any{"sha": sha}
+				if hasExitMarker {
+					d["process_exit_code"] = exitMeta.ProcessExitCode
+				}
+				_ = w.appendEvent("ticket_done", ticketID, d)
+				_ = w.saveTracker()
+				continue
+			}
+		}
+		_ = w.dispatcher.MarkFailed(ticketID)
+		_ = w.saveTracker()
+		d := map[string]any{"reason": "reconcile_failed"}
+		if hasExitMarker {
+			d["process_exit_code"] = exitMeta.ProcessExitCode
+		}
+		_ = w.appendEvent("ticket_failed", ticketID, d)
+	}
+	return nil
+}
+
 func (w *Watchdog) Run(ctx context.Context) error {
 	interval := 5 * time.Minute
 	if parsed, err := time.ParseDuration(strings.TrimSpace(w.config.Watchdog.Interval)); err == nil && parsed > 0 {
@@ -330,7 +379,8 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			continue
 		}
 
-		if runningBackend.HasExited(handle) {
+		exitMeta, hasExitMarker := w.readExitMarker(ticketID)
+		if hasExitMarker || runningBackend.HasExited(handle) {
 			hasCommits, sha, err := w.worktree.HasCommits(ticketID, w.config.Project.BaseBranch)
 			if err != nil {
 				w.log("WARN: HasCommits(%s) error: %v — treating as no commits", ticketID, err)
@@ -354,7 +404,11 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					w.retries[ticketID]++
 					attempt := w.retries[ticketID]
 					if attempt < w.maxRetries() {
-						_ = w.appendEvent("verify_failed_respawn", ticketID, map[string]any{"attempt": attempt, "error": errString(vErr)})
+						data := map[string]any{"attempt": attempt, "error": errString(vErr)}
+						if hasExitMarker {
+							data["process_exit_code"] = exitMeta.ProcessExitCode
+						}
+						_ = w.appendEvent("verify_failed_respawn", ticketID, data)
 						if err := w.SpawnTicket(ctx, ticketID); err != nil {
 							w.log("WARN: respawn after verify fail (%s): %v", ticketID, err)
 						}
@@ -362,7 +416,11 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					}
 					_ = w.dispatcher.MarkFailed(ticketID)
 					_ = w.saveTracker()
-					_ = w.appendEvent("ticket_failed", ticketID, map[string]any{"reason": "verify_failed", "error": errString(vErr), "attempt": attempt})
+					data := map[string]any{"reason": "verify_failed", "error": errString(vErr), "attempt": attempt}
+					if hasExitMarker {
+						data["process_exit_code"] = exitMeta.ProcessExitCode
+					}
+					_ = w.appendEvent("ticket_failed", ticketID, data)
 					_ = w.notifier.Alert(ctx, fmt.Sprintf("ticket %s failed verification", ticketID))
 					continue
 				}
@@ -378,7 +436,11 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					logFile := filepath.Join(filepath.Dir(w.config.Project.Tracker), "logs", ticketID+".log")
 					os.Remove(logFile)
 				}
-				if err := w.appendEvent("ticket_done", ticketID, map[string]any{"sha": sha}); err != nil {
+				doneData := map[string]any{"sha": sha}
+				if hasExitMarker {
+					doneData["process_exit_code"] = exitMeta.ProcessExitCode
+				}
+				if err := w.appendEvent("ticket_done", ticketID, doneData); err != nil {
 					w.log("WARN: appendEvent(ticket_done, %s): %v", ticketID, err)
 				}
 				if err := w.saveTracker(); err != nil {
@@ -399,7 +461,11 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would respawn %s (attempt %d)", ticketID, attempt))
 					continue
 				}
-				if err := w.appendEvent("respawn", ticketID, map[string]any{"attempt": attempt}); err != nil {
+				data := map[string]any{"attempt": attempt}
+				if hasExitMarker {
+					data["process_exit_code"] = exitMeta.ProcessExitCode
+				}
+				if err := w.appendEvent("respawn", ticketID, data); err != nil {
 					w.log("WARN: appendEvent(respawn, %s): %v", ticketID, err)
 				}
 				if err := w.SpawnTicket(ctx, ticketID); err != nil {
@@ -418,7 +484,11 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			if err := w.saveTracker(); err != nil {
 				return err
 			}
-			if err := w.appendEvent("ticket_failed", ticketID, map[string]any{"attempt": attempt}); err != nil {
+			data := map[string]any{"attempt": attempt}
+			if hasExitMarker {
+				data["process_exit_code"] = exitMeta.ProcessExitCode
+			}
+			if err := w.appendEvent("ticket_failed", ticketID, data); err != nil {
 				return err
 			}
 			_ = w.notifier.Alert(ctx, fmt.Sprintf("ticket %s failed after %d attempts", ticketID, attempt))
@@ -811,15 +881,19 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would spawn %s", ticketID))
 		return nil
 	}
+	w.writeSpawnMarker(ticketID)
 
 	handle, err := spawnBackend.Spawn(ctx, backend.SpawnConfig{
 		TicketID:    ticketID,
 		Branch:      branch,
 		WorkDir:     workDir,
+		ProjectDir:  w.projectRoot(),
 		PromptFile:  promptPath,
 		Model:       model,
 		Effort:      w.config.Backend.Effort,
 		ProjectName: w.config.Project.Name,
+		SpawnFile:   w.ticketSpawnFile(ticketID),
+		ExitFile:    w.ticketExitFile(ticketID),
 	})
 	if err != nil {
 		return err

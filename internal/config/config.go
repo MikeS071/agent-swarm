@@ -209,6 +209,11 @@ func Load(path string) (*Config, error) {
 
 	// Normalize relative paths so config works regardless of current working directory.
 	cfg.Project.Repo = resolveRelative(configDir, cfg.Project.Repo)
+	if strings.TrimSpace(cfg.Project.Repo) != "" {
+		if abs, err := filepath.Abs(cfg.Project.Repo); err == nil {
+			cfg.Project.Repo = abs
+		}
+	}
 	cfg.Project.StateDir = resolveRelative(configDir, cfg.Project.StateDir)
 	repoBase := cfg.Project.Repo
 	if repoBase == "" {

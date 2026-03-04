@@ -79,13 +79,13 @@ func (b *CodexBackend) Spawn(ctx context.Context, cfg SpawnConfig) (AgentHandle,
 	if cfg.ProjectName != "" {
 		sessionName = swarmSessionPrefix + cfg.ProjectName + "_" + cfg.TicketID
 	}
-	cmdStr := b.buildExecCommand(cfg)
+	baseCmd := b.buildExecCommand(cfg)
 
 	// Capture stdout to log file for failure analysis
 	logDir := filepath.Join(cfg.ProjectDir, "swarm", "logs")
 	os.MkdirAll(logDir, 0o755)
 	logFile := filepath.Join(logDir, cfg.TicketID+".log")
-	cmdStr = fmt.Sprintf("(%s) 2>&1 | tee %s", cmdStr, shQuote(logFile))
+	cmdStr := b.wrapWithExitArtifact(baseCmd, cfg, logFile)
 
 	if _, err := b.runCmd(ctx, "tmux", "new-session", "-d", "-s", sessionName, cmdStr); err != nil {
 		return AgentHandle{}, err
@@ -119,6 +119,33 @@ func (b *CodexBackend) buildExecCommand(cfg SpawnConfig) string {
 	}
 	parts = append(parts, fmt.Sprintf("\"$(cat %s)\"", shQuote(cfg.PromptFile)))
 	return strings.Join(parts, " ")
+}
+
+func (b *CodexBackend) wrapWithExitArtifact(baseCmd string, cfg SpawnConfig, logFile string) string {
+	lines := []string{
+		"set -o pipefail",
+		fmt.Sprintf("(%s) 2>&1 | tee %s", baseCmd, shQuote(logFile)),
+		"ec=${PIPESTATUS[0]}",
+		"ended=$(date -u +%FT%TZ)",
+	}
+	if strings.TrimSpace(cfg.WorkDir) != "" {
+		lines = append(lines, fmt.Sprintf("head_sha=$(git -C %s rev-parse --short HEAD 2>/dev/null || true)", shQuote(cfg.WorkDir)))
+	} else {
+		lines = append(lines, "head_sha=")
+	}
+	if strings.TrimSpace(cfg.ExitFile) != "" {
+		dir := filepath.Dir(cfg.ExitFile)
+		if strings.TrimSpace(dir) != "" {
+			lines = append(lines, fmt.Sprintf("mkdir -p %s", shQuote(dir)))
+		}
+		py := "python3 -c " + shQuote(`import json,os; print(json.dumps({"ticket_id":os.getenv("TICKET_ID",""),"ended_at":os.getenv("ENDED_AT",""),"process_exit_code":int(os.getenv("EXIT_CODE","0") or 0),"log_path":os.getenv("LOG_PATH",""),"work_dir":os.getenv("WORK_DIR",""),"head_sha":os.getenv("HEAD_SHA","")}))`)
+		lines = append(lines,
+			fmt.Sprintf("TICKET_ID=%s ENDED_AT=\"$ended\" EXIT_CODE=\"$ec\" LOG_PATH=%s WORK_DIR=%s HEAD_SHA=\"$head_sha\" %s > %s", shQuote(cfg.TicketID), shQuote(logFile), shQuote(cfg.WorkDir), py, shQuote(cfg.ExitFile)),
+		)
+	}
+	lines = append(lines, "exit $ec")
+	script := strings.Join(lines, "; ")
+	return fmt.Sprintf("bash -lc %s", shQuote(script))
 }
 
 func shQuote(s string) string {
