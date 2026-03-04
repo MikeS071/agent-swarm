@@ -1,213 +1,6 @@
 {
   "project": "agent-swarm",
   "tickets": {
-    "g1-01": {
-      "status": "done",
-      "phase": 1,
-      "depends": [],
-      "branch": "feat/g1-01",
-      "desc": "Guardian schema parser + validation",
-      "sha": "6802278",
-      "startedAt": "2026-03-04T10:12:03Z",
-      "session_name": "swarm-agent-swarm_g1-01",
-      "session_backend": "codex-tmux",
-      "session_model": "gpt-5.3-codex"
-    },
-    "g1-02": {
-      "status": "failed",
-      "phase": 1,
-      "depends": [
-        "g1-01"
-      ],
-      "branch": "feat/g1-02",
-      "desc": "Decision model + advisory evaluator",
-      "startedAt": "2026-03-04T10:16:34Z",
-      "session_name": "swarm-agent-swarm_g1-02",
-      "session_backend": "codex-tmux",
-      "session_model": "gpt-5.3-codex"
-    },
-    "g1-03": {
-      "status": "todo",
-      "phase": 1,
-      "depends": [
-        "g1-02"
-      ],
-      "branch": "feat/g1-03",
-      "desc": "Emit guardian-events.jsonl"
-    },
-    "g2-01": {
-      "status": "todo",
-      "phase": 2,
-      "depends": [
-        "tst-g1"
-      ],
-      "branch": "feat/g2-01",
-      "desc": "Hook guardian into go transition evaluation"
-    },
-    "g2-02": {
-      "status": "todo",
-      "phase": 2,
-      "depends": [
-        "g2-01"
-      ],
-      "branch": "feat/g2-02",
-      "desc": "Enforce post_build-\u003ecomplete transition"
-    },
-    "g2-03": {
-      "status": "todo",
-      "phase": 2,
-      "depends": [
-        "g2-01"
-      ],
-      "branch": "feat/g2-03",
-      "desc": "Implement PRD + SPEC transition rules"
-    },
-    "g3-01": {
-      "status": "todo",
-      "phase": 3,
-      "depends": [
-        "tst-g2"
-      ],
-      "branch": "feat/g3-01",
-      "desc": "Enforce guardian checks before_spawn"
-    },
-    "g3-02": {
-      "status": "todo",
-      "phase": 3,
-      "depends": [
-        "g3-01"
-      ],
-      "branch": "feat/g3-02",
-      "desc": "Enforce guardian checks before_mark_done"
-    },
-    "g3-03": {
-      "status": "todo",
-      "phase": 3,
-      "depends": [
-        "g3-01"
-      ],
-      "branch": "feat/g3-03",
-      "desc": "Implement ticket/prompt rule checks"
-    },
-    "g4-01": {
-      "status": "todo",
-      "phase": 4,
-      "depends": [
-        "tst-g3"
-      ],
-      "branch": "feat/g4-01",
-      "desc": "Implement approvals.json store"
-    },
-    "g4-02": {
-      "status": "todo",
-      "phase": 4,
-      "depends": [
-        "g4-01"
-      ],
-      "branch": "feat/g4-02",
-      "desc": "Capture evidence payloads for warns/blocks"
-    },
-    "g4-03": {
-      "status": "todo",
-      "phase": 4,
-      "depends": [
-        "g4-02"
-      ],
-      "branch": "feat/g4-03",
-      "desc": "Add guardian report command output"
-    },
-    "g5-01": {
-      "status": "todo",
-      "phase": 5,
-      "depends": [
-        "tst-g4"
-      ],
-      "branch": "feat/g5-01",
-      "desc": "Parse [guardian] config in swarm.toml"
-    },
-    "g5-02": {
-      "status": "todo",
-      "phase": 5,
-      "depends": [
-        "g5-01"
-      ],
-      "branch": "feat/g5-02",
-      "desc": "Init scaffolds default flow.v2.yaml"
-    },
-    "g5-03": {
-      "status": "todo",
-      "phase": 5,
-      "depends": [
-        "g5-02"
-      ],
-      "branch": "feat/g5-03",
-      "desc": "Add guardian migrate advisory-first helper"
-    },
-    "g5-04": {
-      "status": "todo",
-      "phase": 5,
-      "depends": [
-        "g5-01"
-      ],
-      "branch": "feat/g5-04",
-      "desc": "Implement phase int-gap-tst chain rule"
-    },
-    "int-g1": {
-      "status": "todo",
-      "phase": 1,
-      "depends": [
-        "g1-01",
-        "g1-02",
-        "g1-03"
-      ],
-      "branch": "feat/int-g1",
-      "desc": "Integrate G1 modules"
-    },
-    "int-g2": {
-      "status": "todo",
-      "phase": 2,
-      "depends": [
-        "g2-01",
-        "g2-02",
-        "g2-03"
-      ],
-      "branch": "feat/int-g2",
-      "desc": "Integrate G2 transition enforcement"
-    },
-    "int-g3": {
-      "status": "todo",
-      "phase": 3,
-      "depends": [
-        "g3-01",
-        "g3-02",
-        "g3-03"
-      ],
-      "branch": "feat/int-g3",
-      "desc": "Integrate G3 spawn/done enforcement"
-    },
-    "int-g4": {
-      "status": "todo",
-      "phase": 4,
-      "depends": [
-        "g4-01",
-        "g4-02",
-        "g4-03"
-      ],
-      "branch": "feat/int-g4",
-      "desc": "Integrate approvals/evidence/report"
-    },
-    "int-g5": {
-      "status": "todo",
-      "phase": 5,
-      "depends": [
-        "g5-01",
-        "g5-02",
-        "g5-03",
-        "g5-04"
-      ],
-      "branch": "feat/int-g5",
-      "desc": "Integrate config/init/migrate/default rules"
-    },
     "int-tp1": {
       "status": "todo",
       "phase": 1,
@@ -215,7 +8,8 @@
         "tp-01",
         "tp-02",
         "tp-03",
-        "tp-04"
+        "tp-04",
+        "tp-06"
       ],
       "branch": "feat/int-tp1",
       "desc": "Integrate phase 1 ticket prep core"
@@ -225,7 +19,6 @@
       "phase": 2,
       "depends": [
         "tp-05",
-        "tp-06",
         "tp-07",
         "tp-08"
       ],
@@ -245,15 +38,11 @@
       "desc": "Integrate phase 3 guardian + run-scope"
     },
     "tp-01": {
-      "status": "failed",
+      "status": "todo",
       "phase": 1,
       "depends": [],
       "branch": "feat/tp-01",
-      "desc": "Tracker schema v2 + validators",
-      "startedAt": "2026-03-04T10:44:44Z",
-      "session_name": "swarm-agent-swarm_tp-01",
-      "session_backend": "codex-tmux",
-      "session_model": "gpt-5.3-codex"
+      "desc": "Tracker schema v2 + validators"
     },
     "tp-02": {
       "status": "todo",
@@ -293,10 +82,8 @@
     },
     "tp-06": {
       "status": "todo",
-      "phase": 2,
-      "depends": [
-        "tst-tp1"
-      ],
+      "phase": 1,
+      "depends": [],
       "branch": "feat/tp-06",
       "desc": "Init agentkit scaffolding (.agents/.codex)"
     },
@@ -355,51 +142,6 @@
       "branch": "feat/tp-12",
       "desc": "TUI/API run-level post-build reporting"
     },
-    "tst-g1": {
-      "status": "todo",
-      "phase": 1,
-      "depends": [
-        "int-g1"
-      ],
-      "branch": "feat/tst-g1",
-      "desc": "Verify G1 via validate + watch once"
-    },
-    "tst-g2": {
-      "status": "todo",
-      "phase": 2,
-      "depends": [
-        "int-g2"
-      ],
-      "branch": "feat/tst-g2",
-      "desc": "Verify enforce-mode transition blocks"
-    },
-    "tst-g3": {
-      "status": "todo",
-      "phase": 3,
-      "depends": [
-        "int-g3"
-      ],
-      "branch": "feat/tst-g3",
-      "desc": "End-to-end spawn/done enforcement verification"
-    },
-    "tst-g4": {
-      "status": "todo",
-      "phase": 4,
-      "depends": [
-        "int-g4"
-      ],
-      "branch": "feat/tst-g4",
-      "desc": "Verify machine-readable evidence + report"
-    },
-    "tst-g5": {
-      "status": "todo",
-      "phase": 5,
-      "depends": [
-        "int-g5"
-      ],
-      "branch": "feat/tst-g5",
-      "desc": "Final advisory/enforce/init/migrate verification"
-    },
     "tst-tp1": {
       "status": "todo",
       "phase": 1,
@@ -427,5 +169,6 @@
       "branch": "feat/tst-tp3",
       "desc": "Final verification matrix for Ticket Prep V2"
     }
-  }
+  },
+  "activePhase": 1
 }
