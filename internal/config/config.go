@@ -19,6 +19,7 @@ type Config struct {
 	Serve         ServeConfig         `toml:"serve"`
 	Install       InstallConfig       `toml:"install"`
 	Profiles      ProfilesConfig      `toml:"profiles"`
+	Guardian      GuardianConfig      `toml:"guardian"`
 	PostBuild     PostBuildConfig     `toml:"post_build"`
 	StatusReport  StatusReportConfig  `toml:"status_report"`
 }
@@ -76,6 +77,10 @@ type StatusReportConfig struct {
 type IntegrationConfig struct {
 	VerifyCmd   string `toml:"verify_cmd"`
 	AuditTicket string `toml:"audit_ticket"`
+}
+
+type GuardianConfig struct {
+	Enabled bool `toml:"enabled"`
 }
 
 type ServeConfig struct {
@@ -164,6 +169,7 @@ func Default() *Config {
 			Order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
 			ParallelGroups: [][]string{{"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}},
 		},
+		Guardian: GuardianConfig{Enabled: true},
 		StatusReport: StatusReportConfig{
 			Enabled:          false,
 			Interval:         "5m",

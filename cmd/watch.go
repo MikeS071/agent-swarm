@@ -6,6 +6,7 @@ import (
 
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
+	"github.com/MikeS071/agent-swarm/internal/guardian"
 	"github.com/MikeS071/agent-swarm/internal/watchdog"
 	"github.com/MikeS071/agent-swarm/internal/worktree"
 	"github.com/spf13/cobra"
@@ -51,6 +52,9 @@ var watchCmd = &cobra.Command{
 		wd := watchdog.New(cfg, tr, d, be, wt, n)
 		wd.SetConfigPath(cfgFile)
 		wd.SetDryRun(watchDryRun)
+		if cfg.Guardian.Enabled {
+			wd.SetGuardian(guardian.NewStrictEvaluator())
+		}
 
 		if watchOnce {
 			return wd.RunOnce(cmd.Context())
