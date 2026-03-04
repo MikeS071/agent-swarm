@@ -116,17 +116,24 @@ func (m *Manager) HasCommits(ticketID, baseBranch string) (bool, string, error) 
 	if _, statErr := os.Stat(wtPath); os.IsNotExist(statErr) {
 		logOut, _ := m.git(m.RepoDir, "log", fmt.Sprintf("%s..%s", baseBranch, branch), "--oneline")
 		if strings.TrimSpace(logOut) != "" {
-			sha, shaErr := m.git(m.RepoDir, "rev-parse", "--short", branch)
-			if shaErr == nil {
-				return true, strings.TrimSpace(sha), nil
+			meaningful, mErr := m.hasMeaningfulChangesInRange(m.RepoDir, fmt.Sprintf("%s..%s", baseBranch, branch))
+			if mErr == nil && meaningful {
+				sha, shaErr := m.git(m.RepoDir, "rev-parse", "--short", branch)
+				if shaErr == nil {
+					return true, strings.TrimSpace(sha), nil
+				}
 			}
 		}
 		_, _ = m.git(m.RepoDir, "fetch", "origin", branch)
-		remoteLog, remoteErr := m.git(m.RepoDir, "log", fmt.Sprintf("%s..origin/%s", baseBranch, branch), "--oneline")
+		remoteRange := fmt.Sprintf("%s..origin/%s", baseBranch, branch)
+		remoteLog, remoteErr := m.git(m.RepoDir, "log", remoteRange, "--oneline")
 		if remoteErr == nil && strings.TrimSpace(remoteLog) != "" {
-			sha, shaErr := m.git(m.RepoDir, "rev-parse", "--short", "origin/"+branch)
-			if shaErr == nil {
-				return true, strings.TrimSpace(sha), nil
+			meaningful, mErr := m.hasMeaningfulChangesInRange(m.RepoDir, remoteRange)
+			if mErr == nil && meaningful {
+				sha, shaErr := m.git(m.RepoDir, "rev-parse", "--short", "origin/"+branch)
+				if shaErr == nil {
+					return true, strings.TrimSpace(sha), nil
+				}
 			}
 		}
 		return false, "", nil
@@ -140,37 +147,71 @@ func (m *Manager) HasCommits(ticketID, baseBranch string) (bool, string, error) 
 	if strings.TrimSpace(logOut) == "" {
 		// Local branch has no commits ahead — check if agent pushed to remote
 		_, _ = m.git(wtPath, "fetch", "origin", branch)
-		remoteLog, remoteErr := m.git(wtPath, "log", fmt.Sprintf("%s..origin/%s", baseBranch, branch), "--oneline")
+		remoteRange := fmt.Sprintf("%s..origin/%s", baseBranch, branch)
+		remoteLog, remoteErr := m.git(wtPath, "log", remoteRange, "--oneline")
 		if remoteErr == nil && strings.TrimSpace(remoteLog) != "" {
-			sha, shaErr := m.git(wtPath, "rev-parse", "--short", "origin/"+branch)
-			if shaErr != nil {
-				return false, "", shaErr
-			}
-			return true, strings.TrimSpace(sha), nil
-		}
-		// Check for uncommitted work (untracked + modified files) — auto-rescue
-		statusOut, _ := m.git(wtPath, "status", "--porcelain")
-		if strings.TrimSpace(statusOut) != "" {
-			_, _ = m.git(wtPath, "add", "-A")
-			_, commitErr := m.git(wtPath, "commit", "-m", fmt.Sprintf("feat: auto-rescue uncommitted work for %s", ticketID))
-			if commitErr == nil {
-				_, pushErr := m.git(wtPath, "push", "origin", "HEAD:"+branch)
-				if pushErr == nil {
-					sha, shaErr := m.git(wtPath, "rev-parse", "--short", "HEAD")
-					if shaErr == nil {
-						return true, strings.TrimSpace(sha), nil
-					}
+			meaningful, mErr := m.hasMeaningfulChangesInRange(wtPath, remoteRange)
+			if mErr == nil && meaningful {
+				sha, shaErr := m.git(wtPath, "rev-parse", "--short", "origin/"+branch)
+				if shaErr != nil {
+					return false, "", shaErr
 				}
+				return true, strings.TrimSpace(sha), nil
 			}
 		}
 		return false, "", nil
 	}
 
+	meaningful, mErr := m.hasMeaningfulChangesInRange(wtPath, fmt.Sprintf("%s..%s", baseBranch, branch))
+	if mErr != nil || !meaningful {
+		return false, "", nil
+	}
 	sha, err := m.git(wtPath, "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return false, "", err
 	}
 	return true, strings.TrimSpace(sha), nil
+}
+
+func (m *Manager) hasMeaningfulChangesInRange(dir, commitRange string) (bool, error) {
+	out, err := m.git(dir, "diff", "--name-only", commitRange)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.TrimSpace(line)
+		if f == "" {
+			continue
+		}
+		if isIgnorableChangePath(f) {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func isIgnorableChangePath(path string) bool {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return true
+	}
+	if p == ".codex-prompt.md" || p == ".codex-prompt.tmp" {
+		return true
+	}
+	if strings.HasPrefix(p, ".agent-context/") {
+		return true
+	}
+	if strings.HasPrefix(p, "swarm/logs/") {
+		return true
+	}
+	if strings.HasPrefix(p, "swarm/events") {
+		return true
+	}
+	if strings.HasPrefix(p, "tmp/") || strings.HasSuffix(p, ".tmp") {
+		return true
+	}
+	return false
 }
 
 func (m *Manager) CleanupOlderThan(duration time.Duration) ([]string, error) {
