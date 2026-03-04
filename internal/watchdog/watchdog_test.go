@@ -951,8 +951,24 @@ func TestRunOnceSecDoneWithoutCriticalHighCreatesNoFixTickets(t *testing.T) {
 	reportPath := filepath.Join(repo, "swarm", "features", "cache", "sec-report.json")
 	writeFile(t, reportPath, `{
   "findings": [
-    {"severity": "medium", "title": "m1"},
-    {"severity": "low", "title": "l1"}
+    {
+      "severity": "medium",
+      "category": "security",
+      "file": "api/auth.go",
+      "line": 30,
+      "title": "m1",
+      "description": "medium issue",
+      "suggested_fix": "improve validation"
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "api/auth.go",
+      "line": 44,
+      "title": "l1",
+      "description": "low issue",
+      "suggested_fix": "optional cleanup"
+    }
   ],
   "verdict": "WARN",
   "summary": "non-blocking"
@@ -1064,8 +1080,24 @@ func TestRunOnceReviewDoneFixNumberingContinuesFromExisting(t *testing.T) {
 	reportPath := filepath.Join(repo, "swarm", "features", "cache", "review-report.json")
 	writeFile(t, reportPath, `{
   "findings": [
-    {"severity": "high", "title": "h1"},
-    {"severity": "critical", "title": "c1"}
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "handler.go",
+      "line": 12,
+      "title": "h1",
+      "description": "high issue",
+      "suggested_fix": "fix null handling"
+    },
+    {
+      "severity": "critical",
+      "category": "security",
+      "file": "query.go",
+      "line": 21,
+      "title": "c1",
+      "description": "critical issue",
+      "suggested_fix": "parameterize query"
+    }
   ],
   "verdict": "BLOCK",
   "summary": "2 findings"

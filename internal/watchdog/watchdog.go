@@ -81,6 +81,8 @@ type EventLog struct {
 
 type reviewReport struct {
 	Findings []reviewFinding `json:"findings"`
+	Verdict  string          `json:"verdict"`
+	Summary  string          `json:"summary"`
 }
 
 type reviewFinding struct {
@@ -1273,8 +1275,8 @@ func (w *Watchdog) autoCreateFixTickets(ticketID string) (int, error) {
 		return 0, fmt.Errorf("read findings report %s: %w", reportPath, err)
 	}
 
-	var report reviewReport
-	if err := json.Unmarshal(body, &report); err != nil {
+	report, err := parseGuardianReport(body)
+	if err != nil {
 		return 0, fmt.Errorf("parse findings report %s: %w", reportPath, err)
 	}
 
