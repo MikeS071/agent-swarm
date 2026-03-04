@@ -45,9 +45,7 @@ We need a deterministic ticket-prep pipeline where tickets are structured, promp
 
 ## 4.2 Changed commands
 
-- `agent-swarm prompts gen <ticket>` → deprecated for build usage.
-  - Keep as scaffold helper only.
-  - Alias behavior: `agent-swarm prompts scaffold <ticket>`.
+- `agent-swarm prompts gen <ticket>` removed. Use `agent-swarm prompts build` only.
 - `agent-swarm init <project>`
   - add `--with-agentkit` (default: true)
   - scaffolds `.agents/*` and `.codex/rules/*` by default.
@@ -348,7 +346,7 @@ This preserves speed while ensuring implementation readiness.
 ## 13) Migration Plan
 
 ### 13.1 Prompt generation migration
-- keep `prompts gen` as scaffold helper only
+- remove `prompts gen` entirely
 - introduce warning: deprecated for execution
 - docs/examples switch to `prompts build`
 

@@ -60,10 +60,8 @@ Each ticket should have `swarm/prompts/<ticket-id>.md`.
 
 ```bash
 swarm prompts check
-swarm prompts gen feat-01
 ```
 
-If a prompt file is missing at spawn time, the watchdog auto-generates a minimal prompt from ticket description and saves it.
 
 ### 4. Configure backend + project context
 
@@ -73,7 +71,6 @@ Edit `swarm.toml`:
 [project]
 auto_approve = false
 spec_file = "SPEC.md"      # optional project spec included in layered prompts
-default_profile = "code-agent"  # optional default profile from .agents/profiles
 
 [backend]
 type = "codex-tmux"
@@ -203,7 +200,7 @@ Supported install targets: `systemd` (Linux), `launchd` (macOS), `cron` fallback
 When spawning a ticket, prompt content is assembled in this order:
 1. `AGENTS.md`
 2. `project.spec_file` (if configured)
-3. Profile markdown (`ticket.profile` or `project.default_profile`)
+3. Profile markdown (`ticket.profile`)
 4. Ticket prompt file (`swarm/prompts/<ticket>.md`)
 5. `swarm/prompt-footer.md` (if present)
 
