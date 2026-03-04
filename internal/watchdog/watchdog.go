@@ -499,7 +499,6 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		}
 	}
 
-
 	if err := w.maybeSendStatusReport(ctx, sig); err != nil {
 		w.log("WARN: status report: %v", err)
 	}
@@ -584,7 +583,6 @@ func (w *Watchdog) writeLastStatusReportAt(ts time.Time) error {
 	}
 	return os.WriteFile(p, []byte(ts.UTC().Format(time.RFC3339)+"\n"), 0o644)
 }
-
 
 func (w *Watchdog) completionSignature() string {
 	if w == nil || w.tracker == nil {
@@ -728,17 +726,7 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	srcPrompt := filepath.Join(w.config.Project.PromptDir, ticketID+".md")
 	promptBody, err := os.ReadFile(srcPrompt)
 	if err != nil {
-		// Auto-generate prompt from ticket description + project spec
-		tk, _ := w.tracker.Get(ticketID)
-		desc := tk.Desc
-		if desc == "" {
-			desc = "Implement " + ticketID
-		}
-		promptBody = []byte(fmt.Sprintf("# %s\n\n## Objective\n%s\n", ticketID, desc))
-		w.log("WARN: no prompt file for %s — auto-generated from description + spec", ticketID)
-		// Also save it for future reference
-		_ = os.MkdirAll(filepath.Dir(srcPrompt), 0o755)
-		_ = os.WriteFile(srcPrompt, promptBody, 0o644)
+		return fmt.Errorf("missing prompt file for %s at %s", ticketID, srcPrompt)
 	}
 
 	// Assemble layered prompt: governance → spec → profile → ticket → footer
@@ -1787,6 +1775,13 @@ func (w *Watchdog) createPostBuildTicketsForFeature(
 				tk.Depends = []string{}
 			}
 			w.tracker.Tickets[id] = tk
+			promptDir := w.resolvePromptDir()
+			if err := os.MkdirAll(promptDir, 0o755); err == nil {
+				promptPath := filepath.Join(promptDir, id+".md")
+				if _, statErr := os.Stat(promptPath); os.IsNotExist(statErr) {
+					_ = os.WriteFile(promptPath, []byte(buildPostBuildPrompt(id, step, feature, tk.Depends)), 0o644)
+				}
+			}
 			fs.PostBuildStepsSet[step] = true
 			created++
 		}
@@ -1899,6 +1894,29 @@ func buildPostBuildStages(order []string, parallelGroups [][]string) [][]string 
 		stages = append(stages, stage)
 	}
 	return stages
+}
+
+func buildPostBuildPrompt(ticketID, step, feature string, depends []string) string {
+	depText := "none"
+	if len(depends) > 0 {
+		depText = strings.Join(depends, ", ")
+	}
+	return fmt.Sprintf(`# %s
+
+## Objective
+Run post-build step %q for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Execute the %s workflow for feature %s
+- Produce concrete outputs and commit them
+- Do not modify unrelated features
+
+## Verify
+Follow the project verify command and include evidence in commit message.
+`, ticketID, step, feature, depText, step, feature)
 }
 
 func postBuildProfile(step string) string {
