@@ -71,7 +71,7 @@ var (
 )
 
 var promptsBuildCmd = &cobra.Command{
-	Use:          "build <ticket>",
+	Use:          "build <ticket|--all>",
 	Short:        "Compile deterministic execution prompt(s)",
 	SilenceUsage: true,
 	Args:         cobra.ArbitraryArgs,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	intprompts "github.com/MikeS071/agent-swarm/internal/prompts"
@@ -189,4 +190,34 @@ func TestBuildPromptsStrictAllFailsClosedWithoutPartialWrites(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(promptDir, "tp-02.manifest.json")); !os.IsNotExist(statErr) {
 		t.Fatalf("expected no manifest file for invalid ticket on strict --all failure, stat err=%v", statErr)
 	}
+}
+
+func TestPromptsBuildCommandUsageAndArgs(t *testing.T) {
+	t.Run("usage documents ticket or --all", func(t *testing.T) {
+		if promptsBuildCmd.Use != "build <ticket|--all>" {
+			t.Fatalf("prompts build usage = %q, want %q", promptsBuildCmd.Use, "build <ticket|--all>")
+		}
+	})
+
+	t.Run("fails when ticket missing and --all not set", func(t *testing.T) {
+		_, cfgPath := setupFeatureTestProject(t)
+		_, err := runRootWithConfig(t, cfgPath, "prompts", "build")
+		if err == nil {
+			t.Fatal("expected error when ticket is missing")
+		}
+		if !strings.Contains(err.Error(), "requires exactly one ticket or --all") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("fails when ticket provided with --all", func(t *testing.T) {
+		_, cfgPath := setupFeatureTestProject(t)
+		_, err := runRootWithConfig(t, cfgPath, "prompts", "build", "--all", "tp-03")
+		if err == nil {
+			t.Fatal("expected error when ticket is provided with --all")
+		}
+		if !strings.Contains(err.Error(), "ticket argument is not allowed with --all") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
 }
