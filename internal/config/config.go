@@ -20,6 +20,7 @@ type Config struct {
 	Install       InstallConfig       `toml:"install"`
 	Profiles      ProfilesConfig      `toml:"profiles"`
 	PostBuild     PostBuildConfig     `toml:"post_build"`
+	StatusReport  StatusReportConfig  `toml:"status_report"`
 }
 
 type ProjectConfig struct {
@@ -64,6 +65,14 @@ type PostBuildConfig struct {
 	ParallelGroups [][]string `toml:"parallel_groups"`
 }
 
+
+
+type StatusReportConfig struct {
+	Enabled          bool   `toml:"enabled"`
+	Interval         string `toml:"interval"`
+	OnlyWhenRunning  bool   `toml:"only_when_running"`
+	SendOnCompletion bool   `toml:"send_on_completion"`
+}
 type IntegrationConfig struct {
 	VerifyCmd   string `toml:"verify_cmd"`
 	AuditTicket string `toml:"audit_ticket"`
@@ -153,6 +162,12 @@ func Default() *Config {
 			Order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
 			ParallelGroups: [][]string{{"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}},
 		},
+		StatusReport: StatusReportConfig{
+			Enabled:          false,
+			Interval:         "5m",
+			OnlyWhenRunning:  true,
+			SendOnCompletion: true,
+		},
 	}
 }
 
@@ -180,6 +195,9 @@ func Load(path string) (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.Project.FeaturesDir) == "" {
 		cfg.Project.FeaturesDir = "swarm/features"
+	}
+	if strings.TrimSpace(cfg.StatusReport.Interval) == "" {
+		cfg.StatusReport.Interval = "5m"
 	}
 
 	// Normalize relative paths so config works regardless of current working directory.

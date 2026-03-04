@@ -150,6 +150,8 @@ type Watchdog struct {
 	stuckAlerts    map[string]bool
 	gateNoticed    bool
 	completionSent bool
+	lastStatusReport time.Time
+	prevRunningCount int
 	logger         *log.Logger
 }
 
@@ -197,6 +199,7 @@ func New(
 		retries:      map[string]int{},
 		spawnErrors:  map[string]int{},
 		stuckAlerts:  map[string]bool{},
+		prevRunningCount: -1,
 	}
 	w.backendFactory = func(backendType string) (backend.AgentBackend, error) {
 		if w.config == nil {
@@ -499,6 +502,62 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		}
 	}
 
+
+	if err := w.maybeSendStatusReport(ctx, sig); err != nil {
+		w.log("WARN: status report: %v", err)
+	}
+
+	return nil
+}
+
+func (w *Watchdog) maybeSendStatusReport(ctx context.Context, sig dispatcher.Signal) error {
+	if w == nil || w.config == nil || w.tracker == nil {
+		return nil
+	}
+	cfg := w.config.StatusReport
+	if !cfg.Enabled {
+		return nil
+	}
+	now := time.Now().UTC()
+	interval := 5 * time.Minute
+	if d, err := time.ParseDuration(strings.TrimSpace(cfg.Interval)); err == nil && d > 0 {
+		interval = d
+	}
+	stats := w.tracker.Stats()
+	running := stats.Running
+	if w.prevRunningCount < 0 {
+		w.prevRunningCount = running
+	}
+
+	// Periodic status only while active (default behavior).
+	if !(cfg.OnlyWhenRunning && running == 0) {
+		if w.lastStatusReport.IsZero() || now.Sub(w.lastStatusReport) >= interval {
+			active := runningTicketIDs(w.tracker)
+			sort.Strings(active)
+			if len(active) > 5 {
+				active = active[:5]
+			}
+			msg := fmt.Sprintf("%s: done=%d running=%d todo=%d failed=%d", w.tracker.Project, stats.Done, stats.Running, stats.Todo, stats.Failed)
+			if len(active) > 0 {
+				msg += " | active: " + strings.Join(active, ", ")
+			}
+			if err := w.notifier.Info(ctx, msg); err != nil {
+				return err
+			}
+			w.lastStatusReport = now
+		}
+	}
+
+	// Final status report on transition from running -> idle.
+	if cfg.SendOnCompletion && w.prevRunningCount > 0 && running == 0 {
+		final := fmt.Sprintf("%s: run complete | done=%d failed=%d total=%d", w.tracker.Project, stats.Done, stats.Failed, stats.Total)
+		if err := w.notifier.Info(ctx, final); err != nil {
+			return err
+		}
+	}
+
+	w.prevRunningCount = running
+	_ = sig
 	return nil
 }
 
