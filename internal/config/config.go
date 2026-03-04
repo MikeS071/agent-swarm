@@ -24,18 +24,20 @@ type Config struct {
 }
 
 type ProjectConfig struct {
-	Name           string `toml:"name"`
-	Repo           string `toml:"repo"`
-	StateDir       string `toml:"state_dir"`
-	BaseBranch     string `toml:"base_branch"`
-	MaxAgents      int    `toml:"max_agents"`
-	MinRAMMB       int    `toml:"min_ram_mb"`
-	PromptDir      string `toml:"prompt_dir"`
-	Tracker        string `toml:"tracker"`
-	AutoApprove    bool   `toml:"auto_approve"`
-	SpecFile       string `toml:"spec_file"`
-	FeaturesDir    string `toml:"features_dir"`
-	DefaultProfile string `toml:"default_profile"`
+	Name                string `toml:"name"`
+	Repo                string `toml:"repo"`
+	StateDir            string `toml:"state_dir"`
+	BaseBranch          string `toml:"base_branch"`
+	MaxAgents           int    `toml:"max_agents"`
+	MinRAMMB            int    `toml:"min_ram_mb"`
+	PromptDir           string `toml:"prompt_dir"`
+	Tracker             string `toml:"tracker"`
+	AutoApprove         bool   `toml:"auto_approve"`
+	SpecFile            string `toml:"spec_file"`
+	FeaturesDir         string `toml:"features_dir"`
+	DefaultProfile      string `toml:"default_profile"`
+	RequireExplicitRole bool   `toml:"require_explicit_role"`
+	RequireVerifyCmd    bool   `toml:"require_verify_cmd"`
 }
 
 type BackendConfig struct {
@@ -64,8 +66,6 @@ type PostBuildConfig struct {
 	Order          []string   `toml:"order"`
 	ParallelGroups [][]string `toml:"parallel_groups"`
 }
-
-
 
 type StatusReportConfig struct {
 	Enabled          bool   `toml:"enabled"`
@@ -105,15 +105,17 @@ type ProfilesConfig struct {
 func Default() *Config {
 	return &Config{
 		Project: ProjectConfig{
-			Name:        "myproject",
-			Repo:        ".",
-			StateDir:    "",
-			BaseBranch:  "main",
-			MaxAgents:   7,
-			MinRAMMB:    1024,
-			PromptDir:   "swarm/prompts",
-			Tracker:     "swarm/tracker.json",
-			FeaturesDir: "swarm/features",
+			Name:                "myproject",
+			Repo:                ".",
+			StateDir:            "",
+			BaseBranch:          "main",
+			MaxAgents:           7,
+			MinRAMMB:            1024,
+			PromptDir:           "swarm/prompts",
+			Tracker:             "swarm/tracker.json",
+			FeaturesDir:         "swarm/features",
+			RequireExplicitRole: true,
+			RequireVerifyCmd:    true,
 		},
 		Backend: BackendConfig{
 			Type:          "codex-tmux",
@@ -247,7 +249,6 @@ func resolveSecrets(cfg *Config) {
 		}
 	}
 }
-
 
 func resolveRelative(base, value string) string {
 	value = strings.TrimSpace(value)

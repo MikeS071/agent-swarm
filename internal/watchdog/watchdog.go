@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"github.com/MikeS071/agent-swarm/internal/backend"
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
+	"github.com/MikeS071/agent-swarm/internal/guardian"
 	"github.com/MikeS071/agent-swarm/internal/notify"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
 	"github.com/MikeS071/agent-swarm/internal/worktree"
@@ -139,6 +141,7 @@ type Watchdog struct {
 	worktree   *worktree.Manager
 	notifier   notify.Notifier
 	events     *EventLog
+	guardian   guardian.Evaluator
 
 	backendFactory func(backendType string) (backend.AgentBackend, error)
 	backendCache   map[string]backend.AgentBackend
@@ -193,6 +196,7 @@ func New(
 		worktree:     wt,
 		notifier:     n,
 		events:       NewEventLog(eventsPath),
+		guardian:     guardian.NoopEvaluator{},
 		backendCache: cache,
 		retries:      map[string]int{},
 		spawnErrors:  map[string]int{},
@@ -231,6 +235,17 @@ func (w *Watchdog) SetConfigPath(p string) {
 	if w != nil {
 		w.configPath = p
 	}
+}
+
+func (w *Watchdog) SetGuardian(g guardian.Evaluator) {
+	if w == nil {
+		return
+	}
+	if g == nil {
+		w.guardian = guardian.NoopEvaluator{}
+		return
+	}
+	w.guardian = g
 }
 
 // Run executes the watchdog loop at configured interval until ctx cancellation.
@@ -325,6 +340,30 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			if hasCommits {
 				if w.dryRun {
 					_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would mark %s done (%s)", ticketID, sha))
+					continue
+				}
+				gdec, _ := w.guardianCheck(ctx, guardian.EventBeforeMarkDone, ticketID, tk)
+				if gdec.Result == guardian.ResultBlock {
+					_ = w.dispatcher.MarkFailed(ticketID)
+					_ = w.saveTracker()
+					_ = w.appendEvent("guardian_block", ticketID, map[string]any{"event": "before_mark_done", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath})
+					_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked completion for %s", ticketID))
+					continue
+				}
+				if ok, vErr := w.verifyTicket(ticketID, tk); !ok {
+					w.retries[ticketID]++
+					attempt := w.retries[ticketID]
+					if attempt < w.maxRetries() {
+						_ = w.appendEvent("verify_failed_respawn", ticketID, map[string]any{"attempt": attempt, "error": errString(vErr)})
+						if err := w.SpawnTicket(ctx, ticketID); err != nil {
+							w.log("WARN: respawn after verify fail (%s): %v", ticketID, err)
+						}
+						continue
+					}
+					_ = w.dispatcher.MarkFailed(ticketID)
+					_ = w.saveTracker()
+					_ = w.appendEvent("ticket_failed", ticketID, map[string]any{"reason": "verify_failed", "error": errString(vErr), "attempt": attempt})
+					_ = w.notifier.Alert(ctx, fmt.Sprintf("ticket %s failed verification", ticketID))
 					continue
 				}
 				sig, spawnable := w.dispatcher.MarkDone(ticketID, sha)
@@ -443,6 +482,15 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 
 	sig, _ := w.dispatcher.Evaluate()
 	if sig == dispatcher.SignalPhaseGate {
+		gdec, _ := w.guardianCheck(ctx, guardian.EventPhaseTransition, "", tracker.Ticket{Phase: w.dispatcher.CurrentPhase()})
+		if gdec.Result == guardian.ResultBlock {
+			if !w.gateNoticed {
+				w.gateNoticed = true
+				_ = w.appendEvent("guardian_block", "", map[string]any{"event": "phase_transition", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath, "phase": w.dispatcher.CurrentPhase()})
+				_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked phase transition: %s", gdec.Reason))
+			}
+			return nil
+		}
 		if w.config.Project.AutoApprove {
 			_ = w.notifier.Info(ctx, "phase gate reached — auto-approving")
 			approvedSig, spawnable := w.dispatcher.ApprovePhaseGate()
@@ -483,6 +531,12 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	}
 
 	if sig == dispatcher.SignalAllDone && !w.completionSent {
+		gdec, _ := w.guardianCheck(ctx, guardian.EventPostBuildDone, "", tracker.Ticket{Phase: w.dispatcher.CurrentPhase()})
+		if gdec.Result == guardian.ResultBlock {
+			_ = w.appendEvent("guardian_block", "", map[string]any{"event": "post_build_complete", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath})
+			_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked completion: %s", gdec.Reason))
+			return nil
+		}
 		signature := w.completionSignature()
 		if w.wasCompletionNotified(signature) {
 			w.completionSent = true
@@ -705,6 +759,15 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	tk, ok := w.tracker.Tickets[ticketID]
 	if !ok {
 		return fmt.Errorf("ticket %q not found", ticketID)
+	}
+
+	dec, _ := w.guardianCheck(ctx, guardian.EventBeforeSpawn, ticketID, tk)
+	if dec.Result == guardian.ResultBlock {
+		_ = w.appendEvent("guardian_block", ticketID, map[string]any{"event": "before_spawn", "rule": dec.RuleID, "reason": dec.Reason, "evidence": dec.EvidencePath})
+		return fmt.Errorf("guardian blocked spawn for %s: %s", ticketID, dec.Reason)
+	}
+	if w != nil && w.config != nil && w.config.Project.RequireExplicitRole && strings.TrimSpace(tk.Profile) == "" {
+		return fmt.Errorf("ticket %s missing explicit role/profile", ticketID)
 	}
 
 	branch := strings.TrimSpace(tk.Branch)
@@ -1360,9 +1423,87 @@ func buildFixPrompt(fixID, sourceTicket string, finding reviewFinding) string {
 	}
 	return b.String()
 }
+func (w *Watchdog) guardianCheck(ctx context.Context, ev guardian.Event, ticketID string, tk tracker.Ticket) (guardian.Decision, error) {
+	if w == nil || w.guardian == nil {
+		return guardian.Decision{Result: guardian.ResultAllow}, nil
+	}
+	dec, err := w.guardian.Evaluate(ctx, guardian.Request{
+		Event:    ev,
+		TicketID: ticketID,
+		Phase:    tk.Phase,
+		RunID:    strings.TrimSpace(tk.RunID),
+		Context: map[string]any{
+			"type":    tk.Type,
+			"feature": tk.Feature,
+		},
+	})
+	if err != nil {
+		return guardian.Decision{Result: guardian.ResultWarn, Reason: err.Error()}, nil
+	}
+	if dec.Result == "" {
+		dec.Result = guardian.ResultAllow
+	}
+	return dec, nil
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func (w *Watchdog) verifyTicket(ticketID string, tk tracker.Ticket) (bool, error) {
+	verifyCmd := strings.TrimSpace(tk.VerifyCmd)
+	if verifyCmd == "" && w != nil && w.config != nil {
+		verifyCmd = strings.TrimSpace(w.config.Integration.VerifyCmd)
+	}
+	if verifyCmd == "" {
+		if w != nil && w.config != nil && w.config.Project.RequireVerifyCmd {
+			return false, fmt.Errorf("missing verify_cmd for ticket %s", ticketID)
+		}
+		w.log("WARN: ticket %s has no verify_cmd and no integration.verify_cmd; allowing completion", ticketID)
+		return true, nil
+	}
+	wtPath := w.worktree.Path(ticketID)
+	cmd := exec.Command("bash", "-lc", verifyCmd)
+	cmd.Dir = wtPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if len(out) > 0 {
+			w.log("WARN: verify failed for %s: %s", ticketID, truncateText(string(out), 400))
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func truncateText(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return strings.TrimSpace(s)
+	}
+	return strings.TrimSpace(s[:max])
+}
+
 func (w *Watchdog) appendEvent(eventType, ticketID string, data map[string]any) error {
 	if w.events == nil || w.dryRun {
 		return nil
+	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	if w != nil && w.tracker != nil {
+		if tk, ok := w.tracker.Get(ticketID); ok {
+			if _, exists := data["phase"]; !exists {
+				data["phase"] = tk.Phase
+			}
+			if _, exists := data["run_id"]; !exists && strings.TrimSpace(tk.RunID) != "" {
+				data["run_id"] = strings.TrimSpace(tk.RunID)
+			}
+			if _, exists := data["role"]; !exists && strings.TrimSpace(tk.Profile) != "" {
+				data["role"] = strings.TrimSpace(tk.Profile)
+			}
+		}
 	}
 	return w.events.Append(Event{Type: eventType, Ticket: ticketID, Timestamp: time.Now().UTC(), Data: data})
 }

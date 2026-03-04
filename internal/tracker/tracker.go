@@ -23,6 +23,7 @@ type Ticket struct {
 	Depends        []string `json:"depends"`
 	Type           string   `json:"type,omitempty"`
 	Feature        string   `json:"feature,omitempty"`
+	RunID          string   `json:"run_id,omitempty"`
 	Branch         string   `json:"branch,omitempty"`
 	Desc           string   `json:"desc,omitempty"`
 	Profile        string   `json:"profile,omitempty"`
