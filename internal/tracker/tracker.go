@@ -26,6 +26,7 @@ type Ticket struct {
 	Branch         string   `json:"branch,omitempty"`
 	Desc           string   `json:"desc,omitempty"`
 	Profile        string   `json:"profile,omitempty"`
+	VerifyCmd      string   `json:"verify_cmd,omitempty"`
 	SHA            string   `json:"sha,omitempty"`
 	StartedAt      string   `json:"startedAt,omitempty"`
 	FinishedAt     string   `json:"finishedAt,omitempty"`
