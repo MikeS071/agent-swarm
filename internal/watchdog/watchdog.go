@@ -150,8 +150,6 @@ type Watchdog struct {
 	stuckAlerts    map[string]bool
 	gateNoticed    bool
 	completionSent bool
-	lastStatusReport time.Time
-	prevRunningCount int
 	logger         *log.Logger
 }
 
@@ -199,7 +197,6 @@ func New(
 		retries:      map[string]int{},
 		spawnErrors:  map[string]int{},
 		stuckAlerts:  map[string]bool{},
-		prevRunningCount: -1,
 	}
 	w.backendFactory = func(backendType string) (backend.AgentBackend, error) {
 		if w.config == nil {
@@ -525,41 +522,69 @@ func (w *Watchdog) maybeSendStatusReport(ctx context.Context, sig dispatcher.Sig
 	}
 	stats := w.tracker.Stats()
 	running := stats.Running
-	if w.prevRunningCount < 0 {
-		w.prevRunningCount = running
+	if cfg.OnlyWhenRunning && running == 0 {
+		return nil
 	}
 
-	// Periodic status only while active (default behavior).
-	if !(cfg.OnlyWhenRunning && running == 0) {
-		if w.lastStatusReport.IsZero() || now.Sub(w.lastStatusReport) >= interval {
-			active := runningTicketIDs(w.tracker)
-			sort.Strings(active)
-			if len(active) > 5 {
-				active = active[:5]
-			}
-			msg := fmt.Sprintf("%s: done=%d running=%d todo=%d failed=%d", w.tracker.Project, stats.Done, stats.Running, stats.Todo, stats.Failed)
-			if len(active) > 0 {
-				msg += " | active: " + strings.Join(active, ", ")
-			}
-			if err := w.notifier.Info(ctx, msg); err != nil {
-				return err
-			}
-			w.lastStatusReport = now
-		}
+	last, _ := w.readLastStatusReportAt()
+	if !last.IsZero() && now.Sub(last) < interval {
+		return nil
 	}
 
-	// Final status report on transition from running -> idle.
-	if cfg.SendOnCompletion && w.prevRunningCount > 0 && running == 0 {
-		final := fmt.Sprintf("%s: run complete | done=%d failed=%d total=%d", w.tracker.Project, stats.Done, stats.Failed, stats.Total)
-		if err := w.notifier.Info(ctx, final); err != nil {
-			return err
-		}
+	active := runningTicketIDs(w.tracker)
+	sort.Strings(active)
+	if len(active) > 5 {
+		active = active[:5]
 	}
-
-	w.prevRunningCount = running
+	msg := fmt.Sprintf("%s: done=%d running=%d todo=%d failed=%d", w.tracker.Project, stats.Done, stats.Running, stats.Todo, stats.Failed)
+	if len(active) > 0 {
+		msg += " | active: " + strings.Join(active, ", ")
+	}
+	if err := w.notifier.Info(ctx, msg); err != nil {
+		return err
+	}
+	if err := w.writeLastStatusReportAt(now); err != nil {
+		w.log("WARN: writeLastStatusReportAt: %v", err)
+	}
 	_ = sig
 	return nil
 }
+
+func (w *Watchdog) statusReportMarkerPath() string {
+	if w == nil || w.config == nil || strings.TrimSpace(w.config.Project.Tracker) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(w.config.Project.Tracker), ".status-report-last")
+}
+
+func (w *Watchdog) readLastStatusReportAt() (time.Time, error) {
+	p := w.statusReportMarkerPath()
+	if p == "" {
+		return time.Time{}, nil
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return time.Time{}, err
+	}
+	raw := strings.TrimSpace(string(b))
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t, nil
+}
+
+func (w *Watchdog) writeLastStatusReportAt(ts time.Time) error {
+	p := w.statusReportMarkerPath()
+	if p == "" {
+		return nil
+	}
+	return os.WriteFile(p, []byte(ts.UTC().Format(time.RFC3339)+"\n"), 0o644)
+}
+
 
 func (w *Watchdog) completionSignature() string {
 	if w == nil || w.tracker == nil {
