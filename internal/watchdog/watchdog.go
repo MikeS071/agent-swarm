@@ -18,9 +18,13 @@ import (
 	"github.com/MikeS071/agent-swarm/internal/backend"
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
+	guardianengine "github.com/MikeS071/agent-swarm/internal/guardian/engine"
+	guardianevidence "github.com/MikeS071/agent-swarm/internal/guardian/evidence"
+	guardianschema "github.com/MikeS071/agent-swarm/internal/guardian/schema"
 	"github.com/MikeS071/agent-swarm/internal/notify"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
 	"github.com/MikeS071/agent-swarm/internal/worktree"
+	"gopkg.in/yaml.v3"
 )
 
 const swarmSessionPrefix = "swarm-"
@@ -131,14 +135,15 @@ func (l *EventLog) Append(ev Event) error {
 
 // Watchdog runs the self-healing watch loop.
 type Watchdog struct {
-	configPath string
-	config     *config.Config
-	tracker    *tracker.Tracker
-	dispatcher *dispatcher.Dispatcher
-	backend    backend.AgentBackend
-	worktree   *worktree.Manager
-	notifier   notify.Notifier
-	events     *EventLog
+	configPath     string
+	config         *config.Config
+	tracker        *tracker.Tracker
+	dispatcher     *dispatcher.Dispatcher
+	backend        backend.AgentBackend
+	worktree       *worktree.Manager
+	notifier       notify.Notifier
+	events         *EventLog
+	guardianEvents *guardianevidence.EventWriter
 
 	backendFactory func(backendType string) (backend.AgentBackend, error)
 	backendCache   map[string]backend.AgentBackend
@@ -172,8 +177,10 @@ func New(
 		d = dispatcher.New(cfg, tr)
 	}
 	eventsPath := ""
+	guardianEventsPath := ""
 	if cfg != nil && strings.TrimSpace(cfg.Project.Tracker) != "" {
 		eventsPath = filepath.Join(filepath.Dir(cfg.Project.Tracker), "events.jsonl")
+		guardianEventsPath = filepath.Join(filepath.Dir(cfg.Project.Tracker), "guardian-events.jsonl")
 	}
 
 	cache := map[string]backend.AgentBackend{}
@@ -186,17 +193,18 @@ func New(
 	}
 
 	w := &Watchdog{
-		config:       cfg,
-		tracker:      tr,
-		dispatcher:   d,
-		backend:      be,
-		worktree:     wt,
-		notifier:     n,
-		events:       NewEventLog(eventsPath),
-		backendCache: cache,
-		retries:      map[string]int{},
-		spawnErrors:  map[string]int{},
-		stuckAlerts:  map[string]bool{},
+		config:         cfg,
+		tracker:        tr,
+		dispatcher:     d,
+		backend:        be,
+		worktree:       wt,
+		notifier:       n,
+		events:         NewEventLog(eventsPath),
+		guardianEvents: guardianevidence.NewEventWriter(guardianEventsPath),
+		backendCache:   cache,
+		retries:        map[string]int{},
+		spawnErrors:    map[string]int{},
+		stuckAlerts:    map[string]bool{},
 	}
 	w.backendFactory = func(backendType string) (backend.AgentBackend, error) {
 		if w.config == nil {
@@ -226,7 +234,6 @@ func (w *Watchdog) SetDryRun(v bool) {
 		w.dryRun = v
 	}
 }
-
 
 func (w *Watchdog) notifyInfo(ctx context.Context, msg string) error {
 	if w == nil || w.notifier == nil {
@@ -522,7 +529,6 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		}
 	}
 
-
 	if err := w.maybeSendStatusReport(ctx, sig); err != nil {
 		w.log("WARN: status report: %v", err)
 	}
@@ -607,7 +613,6 @@ func (w *Watchdog) writeLastStatusReportAt(ts time.Time) error {
 	}
 	return os.WriteFile(p, []byte(ts.UTC().Format(time.RFC3339)+"\n"), 0o644)
 }
-
 
 func (w *Watchdog) completionSignature() string {
 	if w == nil || w.tracker == nil {
@@ -731,6 +736,9 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	if !ok {
 		return fmt.Errorf("ticket %q not found", ticketID)
 	}
+	if err := w.runGuardianSpawnCheck(ticketID); err != nil {
+		return err
+	}
 
 	branch := strings.TrimSpace(tk.Branch)
 	if branch == "" {
@@ -817,6 +825,76 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		"backend": spawnBackendType,
 		"model":   model,
 	})
+}
+
+func (w *Watchdog) runGuardianSpawnCheck(ticketID string) error {
+	if w == nil || w.config == nil {
+		return nil
+	}
+	repo := strings.TrimSpace(w.config.Project.Repo)
+	if repo == "" {
+		return nil
+	}
+
+	flowPath := filepath.Join(repo, "swarm", "flow.v2.yaml")
+	if _, err := os.Stat(flowPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("stat guardian flow file: %w", err)
+	}
+
+	mode := guardianModeFromFlowFile(flowPath)
+	check := guardianengine.Check{
+		Rule:   "flow_schema_valid",
+		Passed: true,
+		Reason: "flow schema valid",
+		Target: "ticket:" + strings.TrimSpace(ticketID),
+	}
+	if _, err := guardianschema.Load(flowPath); err != nil {
+		check.Passed = false
+		check.Reason = err.Error()
+	}
+
+	decisions := guardianengine.Evaluate(mode, []guardianengine.Check{check})
+	for _, decision := range decisions {
+		if err := w.guardianEvents.AppendDecision(decision); err != nil {
+			return fmt.Errorf("append guardian decision: %w", err)
+		}
+	}
+
+	if guardianengine.Overall(decisions) == guardianengine.ResultBlock {
+		reason := strings.TrimSpace(check.Reason)
+		if reason == "" {
+			reason = "policy check failed"
+		}
+		return fmt.Errorf("guardian blocked spawn for %s: %s", ticketID, reason)
+	}
+	return nil
+}
+
+func guardianModeFromFlowFile(path string) guardianengine.Mode {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return guardianengine.ModeAdvisory
+	}
+
+	var parsed struct {
+		Modes struct {
+			Default string `yaml:"default"`
+		} `yaml:"modes"`
+	}
+	if err := yaml.Unmarshal(raw, &parsed); err == nil {
+		if strings.EqualFold(strings.TrimSpace(parsed.Modes.Default), string(guardianengine.ModeEnforce)) {
+			return guardianengine.ModeEnforce
+		}
+		return guardianengine.ModeAdvisory
+	}
+
+	// Best-effort fallback for malformed YAML where mode can still be inferred.
+	if strings.Contains(strings.ToLower(string(raw)), "default: enforce") {
+		return guardianengine.ModeEnforce
+	}
+	return guardianengine.ModeAdvisory
 }
 
 func (w *Watchdog) spawnBackendForTicket(ticketID string, tk tracker.Ticket) (backend.AgentBackend, string, error) {
