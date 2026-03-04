@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -154,6 +155,7 @@ func Default() *Config {
 }
 
 func Load(path string) (*Config, error) {
+	configDir := filepath.Dir(path)
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
@@ -178,6 +180,28 @@ func Load(path string) (*Config, error) {
 		cfg.Project.FeaturesDir = "swarm/features"
 	}
 
+	// Normalize relative paths so config works regardless of current working directory.
+	cfg.Project.Repo = resolveRelative(configDir, cfg.Project.Repo)
+	repoBase := cfg.Project.Repo
+	if repoBase == "" {
+		repoBase = configDir
+	}
+	cfg.Project.PromptDir = resolveRelative(repoBase, cfg.Project.PromptDir)
+	cfg.Project.Tracker = resolveRelative(repoBase, cfg.Project.Tracker)
+	cfg.Project.FeaturesDir = resolveRelative(repoBase, cfg.Project.FeaturesDir)
+	cfg.Project.SpecFile = resolveRelative(repoBase, cfg.Project.SpecFile)
+
+	// Profile paths are relative to project root.
+	cfg.Profiles.Architect = resolveRelative(repoBase, cfg.Profiles.Architect)
+	cfg.Profiles.CodeAgent = resolveRelative(repoBase, cfg.Profiles.CodeAgent)
+	cfg.Profiles.TDDGuide = resolveRelative(repoBase, cfg.Profiles.TDDGuide)
+	cfg.Profiles.CodeReviewer = resolveRelative(repoBase, cfg.Profiles.CodeReviewer)
+	cfg.Profiles.SecurityReviewer = resolveRelative(repoBase, cfg.Profiles.SecurityReviewer)
+	cfg.Profiles.E2ERunner = resolveRelative(repoBase, cfg.Profiles.E2ERunner)
+	cfg.Profiles.DocUpdater = resolveRelative(repoBase, cfg.Profiles.DocUpdater)
+	cfg.Profiles.RefactorCleaner = resolveRelative(repoBase, cfg.Profiles.RefactorCleaner)
+	cfg.Profiles.BuildErrorResolver = resolveRelative(repoBase, cfg.Profiles.BuildErrorResolver)
+
 	if err := validate(cfg); err != nil {
 		return nil, err
 	}
@@ -192,6 +216,24 @@ func resolveSecrets(cfg *Config) {
 			cfg.Notifications.TelegramToken = strings.TrimSpace(string(out))
 		}
 	}
+}
+
+
+func resolveRelative(base, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	if strings.HasPrefix(value, "~") {
+		return value
+	}
+	if base == "" {
+		return filepath.Clean(value)
+	}
+	return filepath.Clean(filepath.Join(base, value))
 }
 
 func validate(cfg *Config) error {
