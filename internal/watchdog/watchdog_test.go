@@ -191,6 +191,110 @@ func TestGuardianSpawnAllowSpawns(t *testing.T) {
 	}
 }
 
+func TestGuardianDoneBlockMarksFailedInRunOnce(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	wtPath, err := wtMgr.Create("g3-02", "feat/g3-02")
+	if err != nil {
+		t.Fatalf("create g3-02 worktree: %v", err)
+	}
+	writeFile(t, filepath.Join(wtPath, "done.txt"), "ok\n")
+	runGit(t, wtPath, "add", "done.txt")
+	runGit(t, wtPath, "commit", "-m", "done")
+
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"g3-02": {
+			Status:    tracker.StatusRunning,
+			Phase:     1,
+			Branch:    "feat/g3-02",
+			Desc:      "Enforce before_mark_done",
+			Profile:   "code-agent",
+			VerifyCmd: "go test ./...",
+		},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  filepath.Join(t.TempDir(), "prompts"),
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+	be := &fakeBackend{exited: map[string]bool{"swarm-g3-02": true}}
+	w := New(cfg, tr, dispatcher.New(cfg, tr), be, wtMgr, &fakeNotifier{})
+	g := &fakeGuardian{decision: guardian.Decision{Result: guardian.ResultBlock, RuleID: "guardian_done_gate", Reason: "policy unmet"}}
+	w.SetGuardian(g)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if got := tr.Tickets["g3-02"].Status; got != tracker.StatusFailed {
+		t.Fatalf("g3-02 status = %q, want failed", got)
+	}
+	if len(g.events) == 0 || g.events[0] != guardian.EventBeforeMarkDone {
+		t.Fatalf("expected before_mark_done event, got %+v", g.events)
+	}
+}
+
+func TestGuardianDoneBlockMarksFailedInReconcileRunning(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	wtPath, err := wtMgr.Create("g3-02", "feat/g3-02")
+	if err != nil {
+		t.Fatalf("create g3-02 worktree: %v", err)
+	}
+	writeFile(t, filepath.Join(wtPath, "done.txt"), "ok\n")
+	runGit(t, wtPath, "add", "done.txt")
+	runGit(t, wtPath, "commit", "-m", "done")
+
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"g3-02": {
+			Status:    tracker.StatusRunning,
+			Phase:     1,
+			Branch:    "feat/g3-02",
+			Desc:      "Enforce before_mark_done",
+			Profile:   "code-agent",
+			VerifyCmd: "go test ./...",
+		},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  filepath.Join(t.TempDir(), "prompts"),
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+	be := &fakeBackend{exited: map[string]bool{"swarm-g3-02": true}}
+	w := New(cfg, tr, dispatcher.New(cfg, tr), be, wtMgr, &fakeNotifier{})
+	g := &fakeGuardian{decision: guardian.Decision{Result: guardian.ResultBlock, RuleID: "guardian_done_gate", Reason: "policy unmet"}}
+	w.SetGuardian(g)
+
+	if err := w.ReconcileRunning(context.Background()); err != nil {
+		t.Fatalf("reconcile running: %v", err)
+	}
+	if got := tr.Tickets["g3-02"].Status; got != tracker.StatusFailed {
+		t.Fatalf("g3-02 status = %q, want failed", got)
+	}
+	if len(g.events) == 0 || g.events[0] != guardian.EventBeforeMarkDone {
+		t.Fatalf("expected before_mark_done event, got %+v", g.events)
+	}
+}
+
 func TestRunOnceMarksDoneAndChainsSpawn(t *testing.T) {
 	repo := initRepo(t)
 	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
