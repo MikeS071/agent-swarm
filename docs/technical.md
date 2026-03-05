@@ -52,6 +52,9 @@ Output path in worktree: `.codex-prompt.md`.
 Notable project fields:
 - `auto_approve`
 - `spec_file`
+- `post_build.order` (default doc-only)
+- `post_build.require_integrated_base`
+- `post_build.integrated_base_branch`
 
 ### `internal/tracker`
 
@@ -90,6 +93,7 @@ Responsibilities:
 - Retry failed exits without commits.
 - Mark tickets failed after retry limit.
 - Detect long-running tickets via `max_runtime`.
+- Gate post-build spawns on integrated baseline merge (default base: `dev`).
 - Persist JSONL events to `<state_dir>/events.jsonl` and run retention maintenance.
 
 Watchdog event types emitted to JSONL include:
@@ -211,3 +215,17 @@ go test ./... -count=1
 go build ./...
 go vet ./...
 ```
+
+## Runtime Refresh Contract
+
+After every patch/rebuild, refresh runtime deterministically:
+
+```bash
+scripts/refresh-runtime.sh
+```
+
+Contract enforced by script:
+- canonical runtime binary: `~/.local/bin/agent-swarm`
+- watchdog service ExecStart points to canonical binary
+- user systemd daemon reload + timer restart
+- binary/service hash parity verification

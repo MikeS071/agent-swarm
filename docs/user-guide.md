@@ -79,6 +79,12 @@ type = "codex-tmux"
 model = "gpt-5.3-codex"
 effort = "high"
 bypass_sandbox = true
+
+[post_build]
+order = ["doc"]
+parallel_groups = []
+require_integrated_base = true
+integrated_base_branch = "dev"
 ```
 
 ### 5. Run hard preflight gates
@@ -161,6 +167,9 @@ swarm integrate --continue
 ```
 
 `--continue` resumes after conflict resolution using saved integration state.
+
+Post-build note:
+- With `post_build.require_integrated_base = true`, post-build tickets run on the integrated base branch (`post_build.integrated_base_branch`, usually `dev`), not isolated feature branches.
 
 ### 9. Optimize plan throughput
 
@@ -292,3 +301,17 @@ swarm watchdog run-all-once --dry-run --json
 ```
 
 `swarm install` configures scheduler entries to run this command (not single-project `watch --once`).
+
+### 16. Runtime refresh after patches
+
+After any local patch/rebuild, run:
+
+```bash
+scripts/refresh-runtime.sh
+```
+
+This deterministically:
+- rebuilds canonical binary (`~/.local/bin/agent-swarm`)
+- enforces systemd watchdog `ExecStart` path
+- reloads/restarts user systemd timer
+- validates path/version/hash parity
