@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/MikeS071/agent-swarm/internal/guardian/rules"
 )
 
 type StrictEvaluator struct{}
@@ -18,6 +20,17 @@ func (StrictEvaluator) Evaluate(_ context.Context, req Request) (Decision, error
 		}
 		if strings.TrimSpace(asString(req.Context["verify_cmd"])) == "" {
 			return Decision{Result: ResultBlock, RuleID: "ticket_has_required_fields", Reason: "missing verify_cmd"}, nil
+		}
+		desc := asString(req.Context["desc"])
+		if !rules.TicketDescHasScopeAndVerify(desc) {
+			return Decision{Result: ResultBlock, RuleID: "ticket_desc_has_scope_and_verify", Reason: "ticket description missing scope/verify"}, nil
+		}
+		prompt := asString(req.Context["prompt"])
+		if strings.TrimSpace(prompt) == "" {
+			return Decision{Result: ResultBlock, RuleID: "prompt_template_sections", Reason: "missing prompt template"}, nil
+		}
+		if !rules.PromptHasRequiredSections(prompt) {
+			return Decision{Result: ResultBlock, RuleID: "prompt_template_sections", Reason: "prompt missing required sections"}, nil
 		}
 		return Decision{Result: ResultAllow}, nil
 	case EventBeforeMarkDone:

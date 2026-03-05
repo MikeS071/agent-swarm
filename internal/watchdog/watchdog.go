@@ -268,7 +268,7 @@ func (w *Watchdog) ReconcileRunning(ctx context.Context) error {
 			hasCommits = false
 		}
 		if hasCommits {
-			gdec, _ := w.guardianCheck(ctx, guardian.EventBeforeMarkDone, ticketID, tk)
+			gdec, _ := w.guardianCheck(ctx, guardian.EventBeforeMarkDone, ticketID, tk, nil)
 			if gdec.Result == guardian.ResultBlock {
 				_ = w.dispatcher.MarkFailed(ticketID)
 				_ = w.saveTracker()
@@ -392,7 +392,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would mark %s done (%s)", ticketID, sha))
 					continue
 				}
-				gdec, _ := w.guardianCheck(ctx, guardian.EventBeforeMarkDone, ticketID, tk)
+				gdec, _ := w.guardianCheck(ctx, guardian.EventBeforeMarkDone, ticketID, tk, nil)
 				if gdec.Result == guardian.ResultBlock {
 					_ = w.dispatcher.MarkFailed(ticketID)
 					_ = w.saveTracker()
@@ -569,7 +569,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	sig, _ := w.dispatcher.Evaluate()
 	if sig == dispatcher.SignalPhaseGate {
 		phase := w.dispatcher.CurrentPhase()
-		gdec, _ := w.guardianCheck(ctx, guardian.EventPhaseTransition, "", tracker.Ticket{Phase: phase})
+		gdec, _ := w.guardianCheck(ctx, guardian.EventPhaseTransition, "", tracker.Ticket{Phase: phase}, nil)
 		if gdec.Result == guardian.ResultBlock {
 			if !w.gateNoticed {
 				w.gateNoticed = true
@@ -619,7 +619,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	}
 
 	if sig == dispatcher.SignalAllDone && !w.completionSent {
-		gdec, _ := w.guardianCheck(ctx, guardian.EventPostBuildDone, "", tracker.Ticket{Phase: w.dispatcher.CurrentPhase()})
+		gdec, _ := w.guardianCheck(ctx, guardian.EventPostBuildDone, "", tracker.Ticket{Phase: w.dispatcher.CurrentPhase()}, nil)
 		if gdec.Result == guardian.ResultBlock {
 			_ = w.appendEvent("guardian_block", "", map[string]any{"event": "post_build_complete", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath})
 			_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked completion: %s", gdec.Reason))
@@ -963,7 +963,13 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		return fmt.Errorf("ticket %q not found", ticketID)
 	}
 
-	dec, _ := w.guardianCheck(ctx, guardian.EventBeforeSpawn, ticketID, tk)
+	srcPrompt := filepath.Join(w.config.Project.PromptDir, ticketID+".md")
+	promptBody, err := os.ReadFile(srcPrompt)
+	if err != nil {
+		return fmt.Errorf("missing prompt file for %s at %s", ticketID, srcPrompt)
+	}
+
+	dec, _ := w.guardianCheck(ctx, guardian.EventBeforeSpawn, ticketID, tk, map[string]any{"prompt": string(promptBody)})
 	if dec.Result == guardian.ResultBlock {
 		_ = w.appendEvent("guardian_block", ticketID, map[string]any{"event": "before_spawn", "rule": dec.RuleID, "reason": dec.Reason, "evidence": dec.EvidencePath})
 		return fmt.Errorf("guardian blocked spawn for %s: %s", ticketID, dec.Reason)
@@ -997,12 +1003,6 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		if strings.TrimSpace(createdPath) != "" {
 			workDir = createdPath
 		}
-	}
-
-	srcPrompt := filepath.Join(w.config.Project.PromptDir, ticketID+".md")
-	promptBody, err := os.ReadFile(srcPrompt)
-	if err != nil {
-		return fmt.Errorf("missing prompt file for %s at %s", ticketID, srcPrompt)
 	}
 
 	// Assemble layered prompt: governance → spec → profile → ticket → footer
@@ -1641,21 +1641,26 @@ func buildFixPrompt(fixID, sourceTicket string, finding reviewFinding) string {
 	}
 	return b.String()
 }
-func (w *Watchdog) guardianCheck(ctx context.Context, ev guardian.Event, ticketID string, tk tracker.Ticket) (guardian.Decision, error) {
+func (w *Watchdog) guardianCheck(ctx context.Context, ev guardian.Event, ticketID string, tk tracker.Ticket, extra map[string]any) (guardian.Decision, error) {
 	if w == nil || w.guardian == nil {
 		return guardian.Decision{Result: guardian.ResultAllow}, nil
+	}
+	ctxMap := map[string]any{
+		"type":       tk.Type,
+		"feature":    tk.Feature,
+		"profile":    strings.TrimSpace(tk.Profile),
+		"verify_cmd": strings.TrimSpace(tk.VerifyCmd),
+		"desc":       strings.TrimSpace(tk.Desc),
+	}
+	for k, v := range extra {
+		ctxMap[k] = v
 	}
 	dec, err := w.guardian.Evaluate(ctx, guardian.Request{
 		Event:    ev,
 		TicketID: ticketID,
 		Phase:    tk.Phase,
 		RunID:    strings.TrimSpace(tk.RunID),
-		Context: map[string]any{
-			"type":       tk.Type,
-			"feature":    tk.Feature,
-			"profile":    strings.TrimSpace(tk.Profile),
-			"verify_cmd": strings.TrimSpace(tk.VerifyCmd),
-		},
+		Context:  ctxMap,
 	})
 	if err != nil {
 		return guardian.Decision{Result: guardian.ResultWarn, Reason: err.Error()}, nil
