@@ -22,6 +22,7 @@ type Config struct {
 	Guardian      GuardianConfig      `toml:"guardian"`
 	PostBuild     PostBuildConfig     `toml:"post_build"`
 	StatusReport  StatusReportConfig  `toml:"status_report"`
+	Lifecycle     LifecycleConfig     `toml:"lifecycle"`
 }
 
 type ProjectConfig struct {
@@ -73,6 +74,11 @@ type StatusReportConfig struct {
 	OnlyWhenRunning  bool   `toml:"only_when_running"`
 	SendOnCompletion bool   `toml:"send_on_completion"`
 }
+
+type LifecycleConfig struct {
+	PolicyFile string `toml:"policy_file"`
+}
+
 type IntegrationConfig struct {
 	VerifyCmd   string `toml:"verify_cmd"`
 	AuditTicket string `toml:"audit_ticket"`
@@ -175,6 +181,9 @@ func Default() *Config {
 			OnlyWhenRunning:  true,
 			SendOnCompletion: true,
 		},
+		Lifecycle: LifecycleConfig{
+			PolicyFile: ".agents/lifecycle-policy.toml",
+		},
 	}
 }
 
@@ -223,6 +232,7 @@ func Load(path string) (*Config, error) {
 	cfg.Project.Tracker = resolveRelative(repoBase, cfg.Project.Tracker)
 	cfg.Project.FeaturesDir = resolveRelative(repoBase, cfg.Project.FeaturesDir)
 	cfg.Project.SpecFile = resolveRelative(repoBase, cfg.Project.SpecFile)
+	cfg.Lifecycle.PolicyFile = resolveRelative(repoBase, cfg.Lifecycle.PolicyFile)
 
 	// If state_dir is configured and tracker is still the legacy repo-local
 	// default path, move tracker to state dir automatically.

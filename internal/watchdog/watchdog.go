@@ -20,6 +20,7 @@ import (
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
 	"github.com/MikeS071/agent-swarm/internal/guardian"
+	"github.com/MikeS071/agent-swarm/internal/lifecycle"
 	"github.com/MikeS071/agent-swarm/internal/notify"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
 	"github.com/MikeS071/agent-swarm/internal/worktree"
@@ -1980,8 +1981,14 @@ func (w *Watchdog) createPostBuildTicketsForFeature(
 	sort.Strings(prevStageIDs)
 
 	verifyCmd := ""
+	profileMap := lifecycle.DefaultProfileMap()
 	if w != nil && w.config != nil {
 		verifyCmd = strings.TrimSpace(w.config.Integration.VerifyCmd)
+		if m, err := lifecycle.LoadProfileMap(w.config.Lifecycle.PolicyFile); err == nil {
+			profileMap = m
+		} else {
+			w.log("WARN: lifecycle policy load failed (%s): %v", w.config.Lifecycle.PolicyFile, err)
+		}
 	}
 
 	for _, stage := range stages {
@@ -2001,7 +2008,7 @@ func (w *Watchdog) createPostBuildTicketsForFeature(
 				Feature:   feature,
 				Branch:    "feat/" + id,
 				Desc:      postBuildDescription(step, feature),
-				Profile:   postBuildProfile(step),
+				Profile:   lifecycle.ProfileForTicketType(profileMap, step),
 				VerifyCmd: verifyCmd,
 			}
 			if len(tk.Depends) == 0 {
@@ -2371,23 +2378,6 @@ Run post-build step %q for feature %q.
 ## Verify
 %s
 `, ticketID, step, feature, depText, step, feature, verifyText)
-	}
-}
-
-func postBuildProfile(step string) string {
-	switch strings.TrimSpace(step) {
-	case "gap", "review":
-		return "code-reviewer"
-	case "tst":
-		return "e2e-runner"
-	case "sec":
-		return "security-reviewer"
-	case "doc", "mem":
-		return "doc-updater"
-	case "clean":
-		return "refactor-cleaner"
-	default:
-		return ""
 	}
 }
 

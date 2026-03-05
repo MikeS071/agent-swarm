@@ -172,6 +172,10 @@ type = "stdout"
 	if !reflect.DeepEqual(cfg.PostBuild.ParallelGroups, def.PostBuild.ParallelGroups) {
 		t.Fatalf("expected default post_build.parallel_groups %v, got %v", def.PostBuild.ParallelGroups, cfg.PostBuild.ParallelGroups)
 	}
+	wantLifecyclePolicy := filepath.Join(dir, def.Lifecycle.PolicyFile)
+	if cfg.Lifecycle.PolicyFile != wantLifecyclePolicy {
+		t.Fatalf("expected resolved lifecycle.policy_file %q, got %q", wantLifecyclePolicy, cfg.Lifecycle.PolicyFile)
+	}
 }
 
 func TestLoadParsesCustomProfilesAndPostBuild(t *testing.T) {
@@ -197,6 +201,9 @@ security_reviewer = "profiles/custom-security.md"
 [post_build]
 order = ["int", "review", "mem"]
 parallel_groups = [["review", "sec"]]
+
+[lifecycle]
+policy_file = ".agents/custom-lifecycle-policy.toml"
 `)
 
 	cfg, err := Load(path)
@@ -221,6 +228,10 @@ parallel_groups = [["review", "sec"]]
 	}
 	if !reflect.DeepEqual(cfg.PostBuild.ParallelGroups, [][]string{{"review", "sec"}}) {
 		t.Fatalf("expected custom post_build.parallel_groups, got %v", cfg.PostBuild.ParallelGroups)
+	}
+	wantPolicy := filepath.Join(dir, ".agents/custom-lifecycle-policy.toml")
+	if cfg.Lifecycle.PolicyFile != wantPolicy {
+		t.Fatalf("expected resolved lifecycle.policy_file %q, got %q", wantPolicy, cfg.Lifecycle.PolicyFile)
 	}
 }
 
@@ -251,7 +262,6 @@ type = "stdout"
 	}
 }
 
-
 func TestLoadResolvesPathsRelativeToConfigDir(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -273,7 +283,7 @@ type = "stdout"
 `)
 
 	old, _ := os.Getwd()
-	t.Cleanup(func(){ _ = os.Chdir(old) })
+	t.Cleanup(func() { _ = os.Chdir(old) })
 	_ = os.Chdir("/")
 
 	cfg, err := Load(cfgPath)
