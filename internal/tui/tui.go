@@ -359,10 +359,10 @@ func (m model) renderList() string {
 		if strings.TrimSpace(hints.BlockedReason) != "" {
 			line += " | blocked_reason=" + hints.BlockedReason
 		}
+		if strings.TrimSpace(hints.NextAction) != "" {
+			line += " | next_step=" + hints.NextAction
+		}
 		b.WriteString(line + "\n")
-	}
-	if strings.TrimSpace(hints.NextAction) != "" {
-		b.WriteString("Next: " + hints.NextAction + "\n")
 	}
 	if strings.TrimSpace(hints.TrackerPath) != "" {
 		b.WriteString("Tracker: " + hints.TrackerPath + "\n")

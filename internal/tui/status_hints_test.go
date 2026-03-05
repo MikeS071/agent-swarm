@@ -39,7 +39,7 @@ func TestRenderListShowsPhaseGateHints(t *testing.T) {
 	if !strings.Contains(out, "blocked_reason=PHASE_GATE") {
 		t.Fatalf("expected blocked_reason in TUI output:\n%s", out)
 	}
-	if !strings.Contains(out, "Next: run `agent-swarm go` to approve and continue") {
+	if !strings.Contains(out, "next_step=run `agent-swarm go` to approve and continue") {
 		t.Fatalf("expected next action hint in TUI output:\n%s", out)
 	}
 }
