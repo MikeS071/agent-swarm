@@ -1881,6 +1881,11 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 		return nil
 	}
 
+	stepSet := make(map[string]struct{}, len(order))
+	for _, step := range order {
+		stepSet[step] = struct{}{}
+	}
+
 	runStatus := &buildFeatureStatus{PostBuildStepsSet: map[string]bool{}}
 	buildIDSet := map[string]struct{}{}
 	buildFeatures := make([]string, 0, len(features))
@@ -1918,6 +1923,9 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 	}
 
 	if runStatus.BuildTotal == 0 || !allBuildDone {
+		return nil
+	}
+	if hasUndoneNonPostBuildTickets(w.tracker, stepSet) {
 		return nil
 	}
 	sort.Strings(runStatus.BuildIDs)
@@ -2171,6 +2179,22 @@ func (w *Watchdog) createPostBuildTicketsForFeature(
 		prevStageIDs = nextStageIDs
 	}
 	return created
+}
+
+func hasUndoneNonPostBuildTickets(tr *tracker.Tracker, stepSet map[string]struct{}) bool {
+	if tr == nil {
+		return false
+	}
+	for _, tk := range tr.Tickets {
+		t := strings.TrimSpace(tk.Type)
+		if _, isPostBuild := stepSet[t]; isPostBuild {
+			continue
+		}
+		if tk.Status != tracker.StatusDone {
+			return true
+		}
+	}
+	return false
 }
 
 func buildPostBuildStages(order []string, parallelGroups [][]string) [][]string {
