@@ -627,7 +627,7 @@ func TestRunOncePostBuildAutoCreationIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestRunOncePostBuildAutoCreationWaitsForAllNonPostBuildTickets(t *testing.T) {
+func TestRunOncePostBuildAutoCreationPreseedsButDoesNotSpawnWhenBlocked(t *testing.T) {
 	repo := initRepo(t)
 	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
 	promptDir := filepath.Join(t.TempDir(), "prompts")
@@ -673,11 +673,18 @@ func TestRunOncePostBuildAutoCreationWaitsForAllNonPostBuildTickets(t *testing.T
 		t.Fatalf("run once: %v", err)
 	}
 
-	if _, ok := tr.Tickets["int-run"]; ok {
-		t.Fatalf("did not expect run-scope post-build while non-post-build tickets are not done")
+	intRun, ok := tr.Tickets["int-run"]
+	if !ok {
+		t.Fatalf("expected run-scope post-build to be pre-seeded")
+	}
+	if intRun.Status != tracker.StatusTodo {
+		t.Fatalf("int-run status=%q want todo", intRun.Status)
+	}
+	if len(intRun.Depends) == 0 {
+		t.Fatalf("expected int-run to depend on non-post-build tickets")
 	}
 	if len(be.spawnCalls) != 0 {
-		t.Fatalf("expected no spawns, got %#v", be.spawnCalls)
+		t.Fatalf("expected no spawns while dependencies blocked, got %#v", be.spawnCalls)
 	}
 }
 
