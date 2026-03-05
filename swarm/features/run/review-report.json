@@ -1,0 +1,42 @@
+{
+  "findings": [
+    {
+      "severity": "high",
+      "category": "documentation",
+      "file": "swarm/features/run/gap-report.md",
+      "line": 1,
+      "title": "Required review input artifact is missing",
+      "description": "The review spec lists `swarm/features/run/gap-report.md` as a required input, but the file is absent in this worktree. Without it, scope and requirement-coverage cross-checks cannot be fully validated.",
+      "suggested_fix": "Add `swarm/features/run/gap-report.md` from dependency `gap-run` before final approval."
+    },
+    {
+      "severity": "high",
+      "category": "documentation",
+      "file": "swarm/features/run/test-report.md",
+      "line": 1,
+      "title": "Required test evidence artifact is missing",
+      "description": "The review spec requires `swarm/features/run/test-report.md`, but it is missing. This blocks evidence-based validation of intended test coverage for the merged feature changes.",
+      "suggested_fix": "Add `swarm/features/run/test-report.md` from dependency `tst-run` before final approval."
+    },
+    {
+      "severity": "high",
+      "category": "style",
+      "file": "internal/watchdog/watchdog.go",
+      "line": 1873,
+      "title": "Change adds logic to a file exceeding 800 lines",
+      "description": "`internal/watchdog/watchdog.go` is 2571 lines and this change introduces additional orchestration logic into it. Per review policy, files over 800 lines are a blocking maintainability risk because they reduce locality and increase regression surface.",
+      "suggested_fix": "Extract post-build gate evaluation and run-scope ticket generation helpers into smaller focused files/modules and keep `watchdog.go` below the size threshold."
+    },
+    {
+      "severity": "high",
+      "category": "style",
+      "file": "internal/watchdog/watchdog_test.go",
+      "line": 630,
+      "title": "Change extends test file already over 800 lines",
+      "description": "`internal/watchdog/watchdog_test.go` is 1465 lines and the new test increases concentration in an already oversized file. This makes future test maintenance and fault isolation harder.",
+      "suggested_fix": "Split watchdog post-build tests into focused `_test.go` files by behavior area (e.g., post-build gating, spawn/idempotency, lifecycle integration)."
+    }
+  ],
+  "verdict": "BLOCK",
+  "summary": "0 critical, 4 high, 0 medium findings"
+}
