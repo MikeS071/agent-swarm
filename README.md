@@ -146,6 +146,12 @@ max_runtime = "45m"
 stale_timeout = "10m"
 max_retries = 2
 
+[post_build]
+order = ["doc"]
+parallel_groups = []
+require_integrated_base = true
+integrated_base_branch = "dev"
+
 [guardian]
 enabled = true
 
@@ -220,6 +226,17 @@ go build ./...
 go vet ./...
 ```
 
+## Runtime refresh (after every patch/rebuild)
+
+Use the deterministic runtime refresh script to keep CLI binary + systemd watchdog service aligned:
+
+```bash
+scripts/refresh-runtime.sh
+# verify only
+scripts/refresh-runtime.sh --check-only
+```
+
+The script enforces canonical runtime path (`~/.local/bin/agent-swarm`), reloads systemd user units, and validates binary/service hash parity.
 
 ## Multi-project watchdog (recommended in OpenClaw)
 

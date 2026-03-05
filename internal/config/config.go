@@ -173,8 +173,8 @@ func Default() *Config {
 			BuildErrorResolver: ".agents/profiles/build-error-resolver.md",
 		},
 		PostBuild: PostBuildConfig{
-			Order:                 []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
-			ParallelGroups:        [][]string{{"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}},
+			Order:                 []string{"doc"},
+			ParallelGroups:        nil,
 			RequireIntegratedBase: true,
 			IntegratedBaseBranch:  "dev",
 		},

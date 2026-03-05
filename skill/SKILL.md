@@ -63,10 +63,9 @@ agent-swarm add-ticket feat-04 --phase 3 --deps feat-03 --desc "Final audit + te
 
 ```bash
 agent-swarm prompts check          # show missing prompts
-agent-swarm prompts gen feat-01    # generate template
 ```
 
-Each ticket needs `swarm/prompts/<ticket-id>.md` — the agent's task brief.
+Create each prompt manually at `swarm/prompts/<ticket-id>.md`.
 
 ### 4. Start the swarm
 
@@ -127,7 +126,7 @@ agent-swarm integrate --continue   # resume after conflict fix
 | `agent-swarm init <project>` | Scaffold project files |
 | `agent-swarm status [--json] [--watch]` | Show tracker status |
 | `agent-swarm add-ticket <id> --phase N --desc "..."` | Add ticket |
-| `agent-swarm prompts check/gen` | Manage prompt files |
+| `agent-swarm prompts check` | Check prompt coverage |
 | `agent-swarm watch [--once] [--dry-run]` | Run watchdog |
 | `agent-swarm done <ticket> [sha]` | Mark ticket complete |
 | `agent-swarm fail <ticket>` | Mark ticket failed |
@@ -152,11 +151,12 @@ max_agents = 7
 min_ram_mb = 1024
 auto_approve = false       # toggle at runtime with 'm' in TUI
 prompt_dir = "swarm/prompts"
+state_dir = ".local/state"
 tracker = "swarm/tracker.json"
 features_dir = "swarm/features"
 
 [backend]
-type = "codex-tmux"        # codex-tmux | claude-code (future)
+type = "codex-tmux"
 model = "gpt-5.3-codex"
 bypass_sandbox = true
 
@@ -165,8 +165,14 @@ interval = "5m"
 max_runtime = "45m"
 max_retries = 2
 
+[post_build]
+order = ["doc"]
+parallel_groups = []
+require_integrated_base = true
+integrated_base_branch = "dev"
+
 [notifications]
-type = "stdout"            # stdout | telegram
+type = "stdout"
 
 [integration]
 verify_cmd = "go build ./..."
@@ -204,6 +210,22 @@ When used as an OpenClaw skill, the agent can:
 
 The HTTP API (`agent-swarm serve`) enables Mission Control / web dashboard integration via SSE events.
 
+
+## Runtime refresh after patches (required)
+
+After any local patch/rebuild, refresh runtime deterministically:
+
+```bash
+scripts/refresh-runtime.sh
+# check only:
+scripts/refresh-runtime.sh --check-only
+```
+
+This ensures:
+- canonical binary path is used (`~/.local/bin/agent-swarm`)
+- watchdog systemd service points to same binary
+- daemon reload + timer restart are applied
+- binary hash parity checks pass
 
 ## OpenClaw multi-project mode (recommended)
 
