@@ -44,6 +44,39 @@ func TestRenderListShowsPhaseGateHints(t *testing.T) {
 	}
 }
 
+func TestRenderListShowsSpawnHintsLine(t *testing.T) {
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"g1": {Status: tracker.StatusTodo, Phase: 1, Desc: "phase 1"},
+	})
+
+	m := model{
+		config: &config.Config{Project: config.ProjectConfig{
+			Name:        "proj",
+			MaxAgents:   4,
+			AutoApprove: false,
+			Tracker:     "/tmp/state/tracker.json",
+			StateDir:    "/tmp/state",
+			Repo:        "/tmp/repo",
+		}},
+		tracker:  tr,
+		projects: []projectContext{{trackerPath: "/tmp/state/tracker.json"}},
+		pageSize: 20,
+		width:    120,
+	}
+	m.rebuildRows()
+
+	out := m.renderList()
+	if !strings.Contains(out, "Signal: SPAWN") {
+		t.Fatalf("expected spawn signal in TUI output:\n%s", out)
+	}
+	if !strings.Contains(out, "blocked_reason=NONE") {
+		t.Fatalf("expected blocked_reason=NONE in TUI output:\n%s", out)
+	}
+	if !strings.Contains(out, "next_step=spawnable tickets available") {
+		t.Fatalf("expected next_step for spawn in TUI output:\n%s", out)
+	}
+}
+
 func TestToggleAutoApproveUpdatesConfigAndTitle(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "swarm.toml")

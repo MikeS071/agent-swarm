@@ -354,16 +354,19 @@ func (m model) renderList() string {
 	b.WriteString(fmt.Sprintf("Progress: %s %d/%d (%d%%)\n", renderBarOnly(done, total, 24), done, total, pct))
 	b.WriteString(fmt.Sprintf("Phase: %d | Agents: %d/%d | RAM: %s\n", phase, stats.Running, m.config.Project.MaxAgents, ramText))
 	hints := m.deriveStatusHints()
-	if strings.TrimSpace(hints.Signal) != "" {
-		line := fmt.Sprintf("Signal: %s", hints.Signal)
-		if strings.TrimSpace(hints.BlockedReason) != "" {
-			line += " | blocked_reason=" + hints.BlockedReason
-		}
-		if strings.TrimSpace(hints.NextAction) != "" {
-			line += " | next_step=" + hints.NextAction
-		}
-		b.WriteString(line + "\n")
+	signal := strings.TrimSpace(hints.Signal)
+	if signal == "" {
+		signal = "UNKNOWN"
 	}
+	blocked := strings.TrimSpace(hints.BlockedReason)
+	if blocked == "" {
+		blocked = "NONE"
+	}
+	next := strings.TrimSpace(hints.NextAction)
+	if next == "" {
+		next = "none"
+	}
+	b.WriteString(fmt.Sprintf("Signal: %s | blocked_reason=%s | next_step=%s\n", signal, blocked, next))
 	if strings.TrimSpace(hints.TrackerPath) != "" {
 		b.WriteString("Tracker: " + hints.TrackerPath + "\n")
 	}
@@ -402,6 +405,9 @@ func (m model) deriveStatusHints() tuiStatusHints {
 	d := dispatcher.New(m.config, m.tracker)
 	sig, _ := d.Evaluate()
 	h.Signal = string(sig)
+	if strings.TrimSpace(h.Signal) == "" {
+		h.Signal = "SPAWN"
+	}
 
 	s := m.tracker.Stats()
 	switch sig {
@@ -424,7 +430,11 @@ func (m model) deriveStatusHints() tuiStatusHints {
 		if !d.CanSpawnMore() {
 			h.BlockedReason = "CAPACITY_OR_RESOURCE_LIMIT"
 			h.NextAction = "reduce running agents or increase capacity"
+		} else {
+			h.NextAction = "spawnable tickets available"
 		}
+	case dispatcher.SignalAllDone:
+		h.NextAction = "no action needed"
 	}
 
 	if div, err := detectTrackerDivergenceTUI(m.config, m.config.Project.Tracker, m.tracker); err != nil {
