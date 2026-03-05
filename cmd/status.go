@@ -11,12 +11,8 @@ import (
 	"time"
 
 	"github.com/MikeS071/agent-swarm/internal/config"
-	"github.com/MikeS071/agent-swarm/internal/dispatcher"
-	"github.com/MikeS071/agent-swarm/internal/guardian"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
 	"github.com/MikeS071/agent-swarm/internal/tui"
-	"github.com/MikeS071/agent-swarm/internal/watchdog"
-	"github.com/MikeS071/agent-swarm/internal/worktree"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -47,18 +43,7 @@ var statusCmd = &cobra.Command{
 		if statusProject != "" && statusProject != tr.Project {
 			return fmt.Errorf("project %q not found (tracker project is %q)", statusProject, tr.Project)
 		}
-		if !statusWatch && !statusLive {
-			if be, err := buildBackend(cfg); err == nil {
-				d := dispatcher.New(cfg, tr)
-				wt := worktree.New(cfg.Project.Repo, "", cfg.Project.BaseBranch)
-				wd := watchdog.New(cfg, tr, d, be, wt, buildNotifier(cfg))
-				wd.SetConfigPath(cfgFile)
-				if cfg.Guardian.Enabled {
-					wd.SetGuardian(guardian.NewStrictEvaluator())
-				}
-				_ = wd.ReconcileRunning(cmd.Context())
-			}
-		}
+		// status is read-only by design: do not mutate tracker/runtime state here.
 		if statusLive {
 			return runLiveStatus(cfgFile, cfg)
 		}
