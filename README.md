@@ -2,7 +2,8 @@
 
 Go CLI for orchestrating parallel coding agents across isolated git worktrees with dependency tracking and phase gates.
 
-<img width="1511" height="1064" alt="image" src="https://github.com/user-attachments/assets/10349ec9-1c0c-4295-935f-d570f0b50b43" />
+<img width="1508" height="606" alt="image" src="https://github.com/user-attachments/assets/430ff7ab-efc3-42f7-8b82-a24d17ab1f90" />
+
 
 ## Install
 
