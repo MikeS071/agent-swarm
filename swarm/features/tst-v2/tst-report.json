@@ -1,0 +1,33 @@
+{
+  "findings": [
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "test output",
+      "line": 0,
+      "title": "Ticket Prep V2 command missing: tickets lint",
+      "description": "Fresh-project verification failed at `swarm tickets lint --strict` with `unknown command \"tickets\" for \"swarm\"` (exit 1).",
+      "suggested_fix": "Implement/restore the `tickets` command group with `lint` subcommand per Ticket Prep V2 contract."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "test output",
+      "line": 0,
+      "title": "Ticket Prep V2 command missing: prompts build/validate",
+      "description": "`swarm prompts build --all --strict` failed with `unknown flag: --all` and `swarm prompts validate --strict` failed with `unknown flag: --strict` (both exit 1), indicating only `prompts check` is exposed.",
+      "suggested_fix": "Implement/restore `swarm prompts build` and `swarm prompts validate` with strict-mode flags and expected arguments."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "test output",
+      "line": 0,
+      "title": "Fresh-path prep/watch flow is blocked",
+      "description": "In the fresh scaffold, `swarm prep --json` failed with `missing prompt file` for added ticket and `swarm watch --once --dry-run` then failed with `prep gate failed` (both exit 1), preventing the required lint->build->validate->prep->watch flow.",
+      "suggested_fix": "After adding lint/build/validate commands, ensure the documented fresh-path sequence can generate/validate prompts and pass prep before watch."
+    }
+  ],
+  "verdict": "BLOCK",
+  "summary": "Quality gates: `go test ./... -count=1`, `go build ./...`, and `go vet ./...` all passed. Ticket Prep V2 E2E flow failed in a fresh project because `tickets lint`, `prompts build`, and `prompts validate` are not currently available/supported, and prep/watch remained blocked."
+}
