@@ -34,7 +34,7 @@ func TestPrintStatusJSONIncludesRunScopeState(t *testing.T) {
 	color.Output = &out
 	defer func() { color.Output = prev }()
 
-	if err := printStatusJSON(tr); err != nil {
+	if err := printStatusJSON(nil, tr); err != nil {
 		t.Fatalf("printStatusJSON: %v", err)
 	}
 

@@ -55,6 +55,22 @@ type Ticket struct {
 	SessionModel        string   `json:"session_model,omitempty"`
 }
 
+func (t *Ticket) UnmarshalJSON(data []byte) error {
+	type alias Ticket
+	var aux struct {
+		alias
+		RunIDCamel string `json:"runId,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*t = Ticket(aux.alias)
+	if strings.TrimSpace(t.RunID) == "" {
+		t.RunID = strings.TrimSpace(aux.RunIDCamel)
+	}
+	return nil
+}
+
 type Stats struct {
 	Done    int `json:"done"`
 	Running int `json:"running"`
