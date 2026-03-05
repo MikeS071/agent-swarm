@@ -1997,7 +1997,7 @@ func (w *Watchdog) ensurePostBuildIntegratedBase(ctx context.Context) (string, e
 	if !ok {
 		return "", nil
 	}
-	branches, signature := w.doneNonPostBuildBranches(stepSet)
+	branches, signature := w.doneBranchesForPostBuildBaseline(stepSet)
 	if len(branches) == 0 {
 		return w.integratedBaseBranch(), nil
 	}
@@ -2039,7 +2039,7 @@ func (w *Watchdog) ensurePostBuildIntegratedBase(ctx context.Context) (string, e
 	return base, nil
 }
 
-func (w *Watchdog) doneNonPostBuildBranches(stepSet map[string]struct{}) ([]string, string) {
+func (w *Watchdog) doneBranchesForPostBuildBaseline(stepSet map[string]struct{}) ([]string, string) {
 	if w == nil || w.tracker == nil {
 		return nil, ""
 	}
@@ -2059,9 +2059,6 @@ func (w *Watchdog) doneNonPostBuildBranches(stepSet map[string]struct{}) ([]stri
 		if !ok {
 			continue
 		}
-		if _, isPost := stepSet[strings.TrimSpace(tk.Type)]; isPost {
-			continue
-		}
 		if tk.Status != tracker.StatusDone {
 			continue
 		}
@@ -2074,7 +2071,13 @@ func (w *Watchdog) doneNonPostBuildBranches(stepSet map[string]struct{}) ([]stri
 		}
 		seen[branch] = struct{}{}
 		branches = append(branches, branch)
-		_, _ = h.Write([]byte(id + "|" + branch + "|" + strings.TrimSpace(tk.SHA) + "\n"))
+
+		ticketType := strings.TrimSpace(tk.Type)
+		typeGroup := "build"
+		if _, isPost := stepSet[ticketType]; isPost {
+			typeGroup = "post_build"
+		}
+		_, _ = h.Write([]byte(id + "|" + typeGroup + "|" + branch + "|" + strings.TrimSpace(tk.SHA) + "\n"))
 	}
 	return branches, hex.EncodeToString(h.Sum(nil))
 }
