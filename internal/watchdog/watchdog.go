@@ -1876,60 +1876,35 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 		return nil
 	}
 
-	features := w.collectBuildFeatureStatus(order)
-	if len(features) == 0 {
-		return nil
-	}
-
 	stepSet := make(map[string]struct{}, len(order))
 	for _, step := range order {
 		stepSet[step] = struct{}{}
 	}
 
-	runStatus := &buildFeatureStatus{PostBuildStepsSet: map[string]bool{}}
-	buildIDSet := map[string]struct{}{}
-	buildFeatures := make([]string, 0, len(features))
-	allBuildDone := true
+	nonPostBuildIDs, maxPhase, doneCount, featureHints := collectNonPostBuildSummary(w.tracker, stepSet)
+	if len(nonPostBuildIDs) == 0 {
+		return nil
+	}
 
-	for feature, fs := range features {
-		if fs == nil {
-			continue
-		}
-		if fs.BuildTotal == 0 {
-			for step := range fs.PostBuildStepsSet {
-				runStatus.PostBuildStepsSet[step] = true
-			}
-			continue
-		}
-		buildFeatures = append(buildFeatures, feature)
-		runStatus.BuildTotal += fs.BuildTotal
-		runStatus.BuildDone += fs.BuildDone
-		if fs.MaxBuildPhase > runStatus.MaxBuildPhase {
-			runStatus.MaxBuildPhase = fs.MaxBuildPhase
-		}
-		if fs.BuildDone != fs.BuildTotal {
-			allBuildDone = false
-		}
-		for _, id := range fs.BuildIDs {
-			if _, ok := buildIDSet[id]; ok {
-				continue
-			}
-			buildIDSet[id] = struct{}{}
-			runStatus.BuildIDs = append(runStatus.BuildIDs, id)
-		}
-		for step := range fs.PostBuildStepsSet {
+	scopeSteps := collectPostBuildScopeSteps(w.tracker, stepSet)
+	runFeature, ok := choosePostBuildScope(scopeSteps, featureHints)
+	if !ok {
+		w.log("WARN: multiple post-build scopes detected (%d); skipping auto-seed", len(scopeSteps))
+		return nil
+	}
+
+	runStatus := &buildFeatureStatus{
+		BuildIDs:          nonPostBuildIDs,
+		BuildDone:         doneCount,
+		BuildTotal:        len(nonPostBuildIDs),
+		MaxBuildPhase:     maxPhase,
+		PostBuildStepsSet: map[string]bool{},
+	}
+	if steps, ok := scopeSteps[runFeature]; ok {
+		for step := range steps {
 			runStatus.PostBuildStepsSet[step] = true
 		}
 	}
-
-	if runStatus.BuildTotal == 0 || !allBuildDone {
-		return nil
-	}
-	if hasUndoneNonPostBuildTickets(w.tracker, stepSet) {
-		return nil
-	}
-	sort.Strings(runStatus.BuildIDs)
-	sort.Strings(buildFeatures)
 
 	missing := false
 	for _, step := range order {
@@ -1942,13 +1917,8 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 		return nil
 	}
 
-	runFeature := "run"
-	if len(buildFeatures) == 1 {
-		runFeature = buildFeatures[0]
-	}
-
 	if w.dryRun {
-		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would create post-build tickets once for run scope %s", runFeature))
+		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would pre-seed run-scope post-build tickets (scope=%s)", runFeature))
 		return nil
 	}
 
@@ -1956,12 +1926,13 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 	if created == 0 {
 		return nil
 	}
-	msg := fmt.Sprintf("run build complete — created %d post-build tickets (scope=%s)", created, runFeature)
+	msg := fmt.Sprintf("pre-seeded %d run-scope post-build tickets (scope=%s)", created, runFeature)
 	_ = w.notifier.Info(ctx, msg)
 	if err := w.appendEvent("post_build_generated", "", map[string]any{
 		"scope":   "run",
 		"feature": runFeature,
 		"created": created,
+		"seeded":  true,
 	}); err != nil {
 		w.log("WARN: appendEvent(post_build_generated, %s): %v", runFeature, err)
 	}
@@ -2084,27 +2055,16 @@ func parseBuildID(id string) (string, bool) {
 	return feature, true
 }
 
-func postBuildStepFromTicket(id string, tk tracker.Ticket, stepSet map[string]struct{}) (step, feature string, ok bool) {
+func postBuildStepFromTicket(_ string, tk tracker.Ticket, stepSet map[string]struct{}) (step, feature string, ok bool) {
 	ticketType := strings.TrimSpace(tk.Type)
 	feature = strings.TrimSpace(tk.Feature)
-	if ticketType != "" {
-		if _, isStep := stepSet[ticketType]; isStep && feature != "" {
-			return ticketType, feature, true
-		}
-	}
-	i := strings.Index(id, "-")
-	if i <= 0 || i+1 >= len(id) {
+	if ticketType == "" || feature == "" {
 		return "", "", false
 	}
-	step = strings.TrimSpace(id[:i])
-	feature = strings.TrimSpace(id[i+1:])
-	if step == "" || feature == "" {
+	if _, isStep := stepSet[ticketType]; !isStep {
 		return "", "", false
 	}
-	if _, isStep := stepSet[step]; !isStep {
-		return "", "", false
-	}
-	return step, feature, true
+	return ticketType, feature, true
 }
 
 func (w *Watchdog) createPostBuildTicketsForFeature(
@@ -2181,20 +2141,75 @@ func (w *Watchdog) createPostBuildTicketsForFeature(
 	return created
 }
 
-func hasUndoneNonPostBuildTickets(tr *tracker.Tracker, stepSet map[string]struct{}) bool {
+func collectNonPostBuildSummary(tr *tracker.Tracker, stepSet map[string]struct{}) (ids []string, maxPhase, doneCount int, featureHints map[string]struct{}) {
+	featureHints = map[string]struct{}{}
 	if tr == nil {
-		return false
+		return nil, 0, 0, featureHints
 	}
-	for _, tk := range tr.Tickets {
+	ids = make([]string, 0, len(tr.Tickets))
+	for id, tk := range tr.Tickets {
 		t := strings.TrimSpace(tk.Type)
 		if _, isPostBuild := stepSet[t]; isPostBuild {
 			continue
 		}
-		if tk.Status != tracker.StatusDone {
-			return true
+		ids = append(ids, id)
+		if tk.Phase > maxPhase {
+			maxPhase = tk.Phase
+		}
+		if tk.Status == tracker.StatusDone {
+			doneCount++
+		}
+		if feature, ok := buildFeatureFromTicket(id, tk, stepSet); ok && strings.TrimSpace(feature) != "" {
+			featureHints[feature] = struct{}{}
 		}
 	}
-	return false
+	sort.Strings(ids)
+	if maxPhase <= 0 {
+		maxPhase = 1
+	}
+	return ids, maxPhase, doneCount, featureHints
+}
+
+func collectPostBuildScopeSteps(tr *tracker.Tracker, stepSet map[string]struct{}) map[string]map[string]bool {
+	scopes := map[string]map[string]bool{}
+	if tr == nil {
+		return scopes
+	}
+	for id, tk := range tr.Tickets {
+		step, feature, ok := postBuildStepFromTicket(id, tk, stepSet)
+		if !ok {
+			continue
+		}
+		feature = strings.TrimSpace(feature)
+		if feature == "" {
+			continue
+		}
+		if scopes[feature] == nil {
+			scopes[feature] = map[string]bool{}
+		}
+		scopes[feature][step] = true
+	}
+	return scopes
+}
+
+func choosePostBuildScope(existing map[string]map[string]bool, featureHints map[string]struct{}) (string, bool) {
+	if len(existing) == 0 {
+		if len(featureHints) == 1 {
+			for f := range featureHints {
+				return f, true
+			}
+		}
+		return "run", true
+	}
+	if _, ok := existing["run"]; ok {
+		return "run", true
+	}
+	if len(existing) == 1 {
+		for f := range existing {
+			return f, true
+		}
+	}
+	return "", false
 }
 
 func buildPostBuildStages(order []string, parallelGroups [][]string) [][]string {
