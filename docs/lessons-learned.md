@@ -203,3 +203,26 @@ Never use exit codes to determine agent success. Always check git state.
 **Root cause:** Watchdog loaded config once at startup and never re-read it. TUI wrote `auto_approve` to `swarm.toml` but the in-memory config stayed stale.
 **Fix:** Watchdog re-reads `auto_approve` from `swarm.toml` on every `RunOnce()` pass. Dispatcher auto-advances phase gates when auto is true.
 **Lesson:** Any setting togglable at runtime must be re-read from disk by all consumers on every pass.
+
+## Ticket Prep V2 (TP) Defaults (2026-03-05)
+
+### Decisions to keep
+- Keep strict ticket preflight fields on by default: `require_explicit_role=true`, `require_verify_cmd=true`.
+- Keep layered prompt composition order fixed: `AGENTS.md -> spec -> profile -> ticket -> footer`.
+- Keep reviewer/security roles read-only with structured JSON outputs under `swarm/features/<feature>/`.
+- Keep automatic post-build ticket generation enabled with explicit order and dependency staging.
+
+### Trade-offs to remember
+- Strict preflight catches failures early but increases initial ticket authoring work.
+- ID-based feature inference (`<feature>-<n>`, `<step>-<feature>`) preserves legacy compatibility but is less robust than explicit `type` + `feature` fields.
+- Post-build prompts are only created when missing, which protects manual edits but can leave stale templates in place.
+
+### Recommended operational defaults
+- Always set a project-wide `integration.verify_cmd` so post-build tickets inherit one consistent verification command.
+- Require each ticket to declare a `profile` explicitly instead of relying on inferred defaults.
+- Prefer explicit tracker metadata (`type`, `feature`) for all newly created tickets.
+- Run `agent-swarm prep --config <path>` before every watchdog session.
+- When customizing `post_build.parallel_groups`, keep groups contiguous and non-overlapping in `post_build.order`.
+
+### Follow-up quality gap
+- Add direct unit tests for `runPrepChecks` in `cmd/prep.go` (happy path, missing fields, missing prompt file) to lock strict-preflight behavior.
