@@ -831,12 +831,15 @@ func (w *Watchdog) runGuardianSpawnCheck(ticketID string) error {
 	if w == nil || w.config == nil {
 		return nil
 	}
-	repo := strings.TrimSpace(w.config.Project.Repo)
-	if repo == "" {
+	flowPath := ""
+	if repo := strings.TrimSpace(w.config.Project.Repo); repo != "" {
+		flowPath = filepath.Join(repo, "swarm", "flow.v2.yaml")
+	} else if trackerPath := strings.TrimSpace(w.config.Project.Tracker); trackerPath != "" {
+		flowPath = filepath.Join(filepath.Dir(trackerPath), "flow.v2.yaml")
+	}
+	if flowPath == "" {
 		return nil
 	}
-
-	flowPath := filepath.Join(repo, "swarm", "flow.v2.yaml")
 	if _, err := os.Stat(flowPath); os.IsNotExist(err) {
 		return nil
 	} else if err != nil {

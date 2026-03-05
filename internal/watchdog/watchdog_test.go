@@ -529,7 +529,7 @@ func TestEventLogAppendJSONL(t *testing.T) {
 	}
 }
 
-func TestSpawnTicketGuardianChecks(t *testing.T) {
+func TestGuardianSpawnChecks(t *testing.T) {
 	tests := []struct {
 		name               string
 		flowContent        string
@@ -694,6 +694,156 @@ transitions:
 			}
 			if !strings.Contains(line, `"rule":"flow_schema_valid"`) {
 				t.Fatalf("expected flow_schema_valid guardian event, got %s", line)
+			}
+			if !strings.Contains(line, `"result":"`+tc.wantGuardianResult+`"`) {
+				t.Fatalf("guardian result line = %s, want result %q", line, tc.wantGuardianResult)
+			}
+		})
+	}
+}
+
+func TestGuardianSpawnUsesTrackerPathWhenRepoUnset(t *testing.T) {
+	tests := []struct {
+		name               string
+		flowContent        string
+		writeFlow          bool
+		clearTrackerPath   bool
+		wantErrSub         string
+		wantSpawnCalls     int
+		wantStatus         string
+		wantGuardianResult string
+	}{
+		{
+			name: "error path enforce mode invalid flow blocks spawn with empty repo field",
+			flowContent: `
+version: 1
+name: invalid-flow
+modes:
+  default: enforce
+state:
+  initial: planned
+  terminal: [complete]
+phases:
+  - id: building
+    states: [planned, building]
+transitions:
+  - from: planned
+    to: building
+    requires:
+      rules:
+        - type: unknown_rule
+`,
+			writeFlow:          true,
+			wantErrSub:         "guardian blocked spawn",
+			wantSpawnCalls:     0,
+			wantStatus:         tracker.StatusTodo,
+			wantGuardianResult: "BLOCK",
+		},
+		{
+			name: "happy path advisory mode invalid flow warns but still spawns with empty repo field",
+			flowContent: `
+version: 1
+name: invalid-flow
+modes:
+  default: advisory
+state:
+  initial: planned
+  terminal: [complete]
+phases:
+  - id: building
+    states: [planned, building]
+transitions:
+  - from: planned
+    to: building
+    requires:
+      rules:
+        - type: unknown_rule
+`,
+			writeFlow:          true,
+			wantSpawnCalls:     1,
+			wantStatus:         tracker.StatusRunning,
+			wantGuardianResult: "WARN",
+		},
+		{
+			name:             "edge path empty repo and tracker skips guardian",
+			clearTrackerPath: true,
+			wantSpawnCalls:   1,
+			wantStatus:       tracker.StatusRunning,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initRepo(t)
+			wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+			promptDir := filepath.Join(repo, "swarm", "prompts")
+			writeFile(t, filepath.Join(promptDir, "sw-01.md"), "# sw-01\n")
+
+			trackerPath := filepath.Join(repo, "swarm", "tracker.json")
+			tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+				"sw-01": {Status: tracker.StatusTodo, Phase: 1, Branch: "feat/sw-01", Desc: "implement sw-01"},
+			})
+			if err := tr.SaveTo(trackerPath); err != nil {
+				t.Fatalf("save tracker: %v", err)
+			}
+
+			if tc.writeFlow {
+				writeFile(t, filepath.Join(repo, "swarm", "flow.v2.yaml"), strings.TrimSpace(tc.flowContent)+"\n")
+			}
+
+			cfgTrackerPath := trackerPath
+			if tc.clearTrackerPath {
+				cfgTrackerPath = ""
+			}
+			cfg := &config.Config{
+				Project: config.ProjectConfig{
+					Name:       "proj",
+					Repo:       "",
+					BaseBranch: "main",
+					PromptDir:  promptDir,
+					Tracker:    cfgTrackerPath,
+					MaxAgents:  1,
+				},
+				Backend: config.BackendConfig{Model: "m", Effort: "e"},
+			}
+
+			be := &fakeBackend{}
+			n := &fakeNotifier{}
+			d := dispatcher.New(cfg, tr)
+			w := New(cfg, tr, d, be, wtMgr, n)
+
+			err := w.SpawnTicket(context.Background(), "sw-01")
+			if tc.wantErrSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+					t.Fatalf("SpawnTicket() error = %v, want substring %q", err, tc.wantErrSub)
+				}
+			} else if err != nil {
+				t.Fatalf("SpawnTicket() error = %v", err)
+			}
+
+			if len(be.spawnCalls) != tc.wantSpawnCalls {
+				t.Fatalf("spawn calls = %d, want %d", len(be.spawnCalls), tc.wantSpawnCalls)
+			}
+			if got := tr.Tickets["sw-01"].Status; got != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got, tc.wantStatus)
+			}
+
+			guardianEventsPath := filepath.Join(repo, "swarm", "guardian-events.jsonl")
+			if tc.wantGuardianResult == "" {
+				if _, statErr := os.Stat(guardianEventsPath); !os.IsNotExist(statErr) {
+					t.Fatalf("guardian events should not exist, stat err=%v", statErr)
+				}
+				return
+			}
+
+			body, readErr := os.ReadFile(guardianEventsPath)
+			if readErr != nil {
+				t.Fatalf("read guardian events: %v", readErr)
+			}
+			line := strings.TrimSpace(string(body))
+			if line == "" {
+				t.Fatalf("expected guardian event line in %s", guardianEventsPath)
 			}
 			if !strings.Contains(line, `"result":"`+tc.wantGuardianResult+`"`) {
 				t.Fatalf("guardian result line = %s, want result %q", line, tc.wantGuardianResult)
