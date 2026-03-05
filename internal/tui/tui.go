@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +17,7 @@ import (
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
 	"github.com/MikeS071/agent-swarm/internal/progress"
 	"github.com/MikeS071/agent-swarm/internal/sysinfo"
+	"github.com/MikeS071/agent-swarm/internal/version"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -908,12 +908,7 @@ func absOrJoin(base, p string) string {
 }
 
 func appVersion() string {
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		if v := strings.TrimSpace(bi.Main.Version); v != "" && v != "(devel)" {
-			return "v" + strings.TrimPrefix(v, "v")
-		}
-	}
-	return "vdev"
+	return version.String()
 }
 
 func maxInt(a, b int) int {
