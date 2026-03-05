@@ -17,7 +17,7 @@ bypass_sandbox = true
 type = "stdout"
 
 [watchdog]
-interval = "5m"
+interval = "1m"
 max_runtime = "60m"
 stale_timeout = "10m"
 max_retries = 2
@@ -25,3 +25,9 @@ max_retries = 2
 [integration]
 verify_cmd = "go build ./..."
 audit_ticket = "sw-09"
+
+[status_report]
+enabled = true
+interval = "1m"
+only_when_running = true
+send_on_completion = true
