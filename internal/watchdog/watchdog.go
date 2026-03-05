@@ -856,6 +856,16 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 			workDir = createdPath
 		}
 	}
+	contextManifestPath, _, err := w.worktree.MaterializeAgentContext(worktree.AgentContextOptions{
+		TicketID:     ticketID,
+		WorktreePath: workDir,
+		Role:         strings.TrimSpace(tk.Profile),
+		RunID:        strings.TrimSpace(tk.RunID),
+		CreatedAt:    time.Now().UTC(),
+	})
+	if err != nil {
+		return fmt.Errorf("materialize .agent-context for %s: %w", ticketID, err)
+	}
 
 	srcPrompt := filepath.Join(w.config.Project.PromptDir, ticketID+".md")
 	promptBody, err := os.ReadFile(srcPrompt)
@@ -881,19 +891,20 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would spawn %s", ticketID))
 		return nil
 	}
-	w.writeSpawnMarker(ticketID)
+	w.writeSpawnMarker(ticketID, contextManifestPath)
 
 	handle, err := spawnBackend.Spawn(ctx, backend.SpawnConfig{
-		TicketID:    ticketID,
-		Branch:      branch,
-		WorkDir:     workDir,
-		ProjectDir:  w.projectRoot(),
-		PromptFile:  promptPath,
-		Model:       model,
-		Effort:      w.config.Backend.Effort,
-		ProjectName: w.config.Project.Name,
-		SpawnFile:   w.ticketSpawnFile(ticketID),
-		ExitFile:    w.ticketExitFile(ticketID),
+		TicketID:            ticketID,
+		Branch:              branch,
+		WorkDir:             workDir,
+		ProjectDir:          w.projectRoot(),
+		PromptFile:          promptPath,
+		Model:               model,
+		Effort:              w.config.Backend.Effort,
+		ProjectName:         w.config.Project.Name,
+		SpawnFile:           w.ticketSpawnFile(ticketID),
+		ExitFile:            w.ticketExitFile(ticketID),
+		ContextManifestPath: contextManifestPath,
 	})
 	if err != nil {
 		return err
@@ -916,9 +927,10 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		return err
 	}
 	return w.appendEvent("ticket_spawned", ticketID, map[string]any{
-		"session": handle.SessionName,
-		"backend": spawnBackendType,
-		"model":   model,
+		"session":               handle.SessionName,
+		"backend":               spawnBackendType,
+		"model":                 model,
+		"context_manifest_path": contextManifestPath,
 	})
 }
 

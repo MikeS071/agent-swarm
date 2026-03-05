@@ -2,7 +2,10 @@ package watchdog
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/MikeS071/agent-swarm/internal/config"
@@ -216,5 +219,193 @@ func TestSpawnTicketUsesResolvedModelFromProfileFrontmatter(t *testing.T) {
 	}
 	if got := be.spawnCalls[0].Model; got != "gpt-5.2" {
 		t.Fatalf("spawn model = %q, want %q", got, "gpt-5.2")
+	}
+}
+
+func TestSpawnTicketMaterializesAgentContextAndLogsManifestPath(t *testing.T) {
+	repo := initRepo(t)
+	writeFile(t, filepath.Join(repo, ".codex", "rules", "base.md"), "base\n")
+	writeFile(t, filepath.Join(repo, ".codex", "rules", "code-agent.md"), "code-agent rule\n")
+	writeFile(t, filepath.Join(repo, ".agents", "profiles", "code-agent.md"), "---\nmodel: gpt-5.2\n---\n")
+	writeFile(t, filepath.Join(repo, ".agents", "skills", "tdd-workflow", "SKILL.md"), "TDD\n")
+
+	promptDir := filepath.Join(repo, "swarm", "prompts")
+	writeFile(t, filepath.Join(promptDir, "sw-11.md"), "# sw-11\n")
+
+	trackerPath := filepath.Join(repo, "swarm", "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-11": {Status: tracker.StatusTodo, Phase: 1, Profile: "code-agent", RunID: "run-11"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{
+			Type:   "codex-tmux",
+			Model:  "gpt-5.3-codex",
+			Effort: "high",
+		},
+	}
+
+	be := &fakeBackend{}
+	d := dispatcher.New(cfg, tr)
+	wt := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	w := New(cfg, tr, d, be, wt, &fakeNotifier{})
+
+	if err := w.SpawnTicket(context.Background(), "sw-11"); err != nil {
+		t.Fatalf("SpawnTicket() error = %v", err)
+	}
+	if len(be.spawnCalls) != 1 {
+		t.Fatalf("spawn calls = %d, want 1", len(be.spawnCalls))
+	}
+
+	call := be.spawnCalls[0]
+	wantManifestPath := filepath.Join(call.WorkDir, ".agent-context", "context-manifest.json")
+	if call.ContextManifestPath != wantManifestPath {
+		t.Fatalf("context manifest path = %q, want %q", call.ContextManifestPath, wantManifestPath)
+	}
+	if _, err := os.Stat(wantManifestPath); err != nil {
+		t.Fatalf("manifest missing at %s: %v", wantManifestPath, err)
+	}
+
+	b, err := os.ReadFile(wantManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(b, &manifest); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if manifest["role"] != "code-agent" {
+		t.Fatalf("manifest role = %v", manifest["role"])
+	}
+
+	eventsPath := filepath.Join(filepath.Dir(trackerPath), "events.jsonl")
+	eventsRaw, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read events log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(eventsRaw)), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("expected at least one event line")
+	}
+	var last Event
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &last); err != nil {
+		t.Fatalf("unmarshal last event: %v", err)
+	}
+	if last.Type != "ticket_spawned" {
+		t.Fatalf("last event type = %q, want ticket_spawned", last.Type)
+	}
+	gotPath, _ := last.Data["context_manifest_path"].(string)
+	if gotPath != wantManifestPath {
+		t.Fatalf("event context_manifest_path = %q, want %q", gotPath, wantManifestPath)
+	}
+}
+
+func TestSpawnTicketFailsWhenContextProfileSourceMissing(t *testing.T) {
+	repo := initRepo(t)
+	writeFile(t, filepath.Join(repo, ".codex", "rules", "base.md"), "base\n")
+
+	promptDir := filepath.Join(repo, "swarm", "prompts")
+	writeFile(t, filepath.Join(promptDir, "sw-12.md"), "# sw-12\n")
+
+	trackerPath := filepath.Join(repo, "swarm", "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-12": {Status: tracker.StatusTodo, Phase: 1, Profile: "code-agent"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Type: "codex-tmux", Model: "gpt-5.3-codex", Effort: "high"},
+	}
+
+	be := &fakeBackend{}
+	d := dispatcher.New(cfg, tr)
+	wt := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	w := New(cfg, tr, d, be, wt, &fakeNotifier{})
+
+	err := w.SpawnTicket(context.Background(), "sw-12")
+	if err == nil {
+		t.Fatalf("expected SpawnTicket error when role profile source is missing")
+	}
+	if !strings.Contains(err.Error(), "profile") {
+		t.Fatalf("expected profile-related error, got %v", err)
+	}
+	if len(be.spawnCalls) != 0 {
+		t.Fatalf("expected no backend spawn call on context snapshot error")
+	}
+}
+
+func TestSpawnTicketWithoutRoleStillCreatesContextManifest(t *testing.T) {
+	repo := initRepo(t)
+	writeFile(t, filepath.Join(repo, ".codex", "rules", "base.md"), "base\n")
+	writeFile(t, filepath.Join(repo, ".agents", "skills", "tdd-workflow", "SKILL.md"), "TDD\n")
+
+	promptDir := filepath.Join(repo, "swarm", "prompts")
+	writeFile(t, filepath.Join(promptDir, "sw-13.md"), "# sw-13\n")
+
+	trackerPath := filepath.Join(repo, "swarm", "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-13": {Status: tracker.StatusTodo, Phase: 1},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:                "proj",
+			Repo:                repo,
+			BaseBranch:          "main",
+			PromptDir:           promptDir,
+			Tracker:             trackerPath,
+			MaxAgents:           1,
+			RequireExplicitRole: false,
+		},
+		Backend: config.BackendConfig{Type: "codex-tmux", Model: "gpt-5.3-codex", Effort: "high"},
+	}
+
+	be := &fakeBackend{}
+	d := dispatcher.New(cfg, tr)
+	wt := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	w := New(cfg, tr, d, be, wt, &fakeNotifier{})
+
+	if err := w.SpawnTicket(context.Background(), "sw-13"); err != nil {
+		t.Fatalf("SpawnTicket() error = %v", err)
+	}
+	if len(be.spawnCalls) != 1 {
+		t.Fatalf("spawn calls = %d, want 1", len(be.spawnCalls))
+	}
+
+	manifestPath := filepath.Join(be.spawnCalls[0].WorkDir, ".agent-context", "context-manifest.json")
+	b, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(b, &manifest); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if _, ok := manifest["role"]; ok {
+		t.Fatalf("expected empty role to be omitted from manifest, got %v", manifest["role"])
 	}
 }

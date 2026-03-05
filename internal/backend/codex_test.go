@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -165,5 +166,45 @@ func TestCodexLifecycleAndOutput(t *testing.T) {
 	}
 	if !reflect.DeepEqual(sessions, []string{"swarm-sw-01", "swarm-sw-02"}) {
 		t.Fatalf("unexpected sessions: %#v", sessions)
+	}
+}
+
+func TestCodexSpawnExitArtifactIncludesContextManifestPath(t *testing.T) {
+	fr := &fakeRunner{}
+	b := newCodexBackendWithDeps("/usr/bin/codex", true,
+		nil,
+		nil,
+		fr.run,
+		func() time.Time { return time.Unix(100, 0) },
+	)
+
+	_, err := b.Spawn(context.Background(), SpawnConfig{
+		TicketID:            "sw-99",
+		WorkDir:             "/repo/worktree",
+		ProjectDir:          "/repo",
+		PromptFile:          "/repo/swarm/prompts/sw-99.md",
+		Model:               "gpt-5.3-codex",
+		ExitFile:            "/repo/swarm/state/runs/sw-99/exit.json",
+		ContextManifestPath: "/repo/wts/sw-99/.agent-context/context-manifest.json",
+	})
+	if err != nil {
+		t.Fatalf("spawn returned err: %v", err)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("expected 1 command call, got %d", len(fr.calls))
+	}
+	call := fr.calls[0]
+	if call.name != "tmux" {
+		t.Fatalf("expected tmux, got %q", call.name)
+	}
+	if len(call.args) < 5 {
+		t.Fatalf("expected tmux command argument, got %#v", call.args)
+	}
+	cmdStr := call.args[4]
+	if !strings.Contains(cmdStr, "context_manifest_path") {
+		t.Fatalf("expected command to include context_manifest_path field, got: %s", cmdStr)
+	}
+	if !strings.Contains(cmdStr, "/repo/wts/sw-99/.agent-context/context-manifest.json") {
+		t.Fatalf("expected command to include context manifest path value, got: %s", cmdStr)
 	}
 }
