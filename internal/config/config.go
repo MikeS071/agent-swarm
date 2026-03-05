@@ -79,7 +79,8 @@ type IntegrationConfig struct {
 }
 
 type GuardianConfig struct {
-	Enabled bool `toml:"enabled"`
+	Enabled bool   `toml:"enabled"`
+	Mode    string `toml:"mode"`
 }
 
 type ServeConfig struct {
@@ -168,7 +169,7 @@ func Default() *Config {
 			Order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
 			ParallelGroups: [][]string{{"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}},
 		},
-		Guardian: GuardianConfig{Enabled: true},
+		Guardian: GuardianConfig{Enabled: true, Mode: "enforce"},
 		StatusReport: StatusReportConfig{
 			Enabled:          false,
 			Interval:         "5m",
@@ -305,5 +306,13 @@ func validate(cfg *Config) error {
 	if strings.TrimSpace(cfg.Notifications.Type) == "" {
 		return fmt.Errorf("notifications.type is required")
 	}
+	mode := strings.ToLower(strings.TrimSpace(cfg.Guardian.Mode))
+	if mode == "" {
+		mode = "enforce"
+	}
+	if mode != "advisory" && mode != "enforce" {
+		return fmt.Errorf("guardian.mode must be advisory or enforce")
+	}
+	cfg.Guardian.Mode = mode
 	return nil
 }

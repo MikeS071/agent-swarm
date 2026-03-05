@@ -251,6 +251,67 @@ type = "stdout"
 	}
 }
 
+func TestDefaultGuardianModeIsEnforce(t *testing.T) {
+	t.Parallel()
+	if got := Default().Guardian.Mode; got != "enforce" {
+		t.Fatalf("guardian.mode=%q want enforce", got)
+	}
+}
+
+func TestLoadGuardianModeAdvisory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeFile(t, dir, "swarm.toml", `
+[project]
+name = "myproject"
+
+[backend]
+type = "codex-tmux"
+
+[notifications]
+type = "stdout"
+
+[watchdog]
+
+[guardian]
+enabled = true
+mode = "advisory"
+`)
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Guardian.Mode != "advisory" {
+		t.Fatalf("guardian.mode=%q want advisory", got.Guardian.Mode)
+	}
+}
+
+func TestLoadGuardianModeInvalidFails(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeFile(t, dir, "swarm.toml", `
+[project]
+name = "myproject"
+
+[backend]
+type = "codex-tmux"
+
+[notifications]
+type = "stdout"
+
+[watchdog]
+
+[guardian]
+enabled = true
+mode = "strict"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid guardian.mode")
+	}
+}
 
 func TestLoadResolvesPathsRelativeToConfigDir(t *testing.T) {
 	t.Parallel()
@@ -273,7 +334,7 @@ type = "stdout"
 `)
 
 	old, _ := os.Getwd()
-	t.Cleanup(func(){ _ = os.Chdir(old) })
+	t.Cleanup(func() { _ = os.Chdir(old) })
 	_ = os.Chdir("/")
 
 	cfg, err := Load(cfgPath)

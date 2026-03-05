@@ -32,6 +32,13 @@ type Decision struct {
 	RuleID       string
 	Reason       string
 	EvidencePath string
+	Violations   []Violation
+}
+
+type Violation struct {
+	RuleID       string
+	Reason       string
+	EvidencePath string
 }
 
 type Evaluator interface {

@@ -54,6 +54,14 @@ func (w *Watchdog) ticketExitFile(ticketID string) string {
 	return filepath.Join(d, "exit.json")
 }
 
+func (w *Watchdog) guardianEvidenceDir(ticketID string) string {
+	d := w.runtimeTicketDir(ticketID)
+	if d == "" {
+		return ""
+	}
+	return filepath.Join(d, "guardian")
+}
+
 func (w *Watchdog) writeSpawnMarker(ticketID string) {
 	d := w.runtimeTicketDir(ticketID)
 	if d == "" {

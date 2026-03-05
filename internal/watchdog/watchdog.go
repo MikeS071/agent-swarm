@@ -832,13 +832,33 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		return fmt.Errorf("ticket %q not found", ticketID)
 	}
 
-	dec, _ := w.guardianCheck(ctx, guardian.EventBeforeSpawn, ticketID, tk)
-	if dec.Result == guardian.ResultBlock {
-		_ = w.appendEvent("guardian_block", ticketID, map[string]any{"event": "before_spawn", "rule": dec.RuleID, "reason": dec.Reason, "evidence": dec.EvidencePath})
-		return fmt.Errorf("guardian blocked spawn for %s: %s", ticketID, dec.Reason)
+	srcPrompt := filepath.Join(w.config.Project.PromptDir, ticketID+".md")
+	promptBody, err := os.ReadFile(srcPrompt)
+	if err != nil {
+		return fmt.Errorf("missing prompt file for %s at %s", ticketID, srcPrompt)
 	}
-	if w != nil && w.config != nil && w.config.Project.RequireExplicitRole && strings.TrimSpace(tk.Profile) == "" {
-		return fmt.Errorf("ticket %s missing explicit role/profile", ticketID)
+	verifyCmd := strings.TrimSpace(tk.VerifyCmd)
+	if verifyCmd == "" && w != nil && w.config != nil {
+		verifyCmd = strings.TrimSpace(w.config.Integration.VerifyCmd)
+	}
+	dec, _ := w.guardianCheckWithContext(ctx, guardian.EventBeforeSpawn, ticketID, tk, map[string]any{
+		"prompt_path":           srcPrompt,
+		"prompt_body":           string(promptBody),
+		"verify_cmd_effective":  verifyCmd,
+		"require_explicit_role": w.config.Project.RequireExplicitRole,
+		"require_verify_cmd":    w.config.Project.RequireVerifyCmd,
+		"evidence_dir":          w.guardianEvidenceDir(ticketID),
+	})
+	switch dec.Result {
+	case guardian.ResultBlock:
+		for _, v := range guardianViolations(dec) {
+			_ = w.appendEvent("guardian_block", ticketID, map[string]any{"event": "before_spawn", "rule": v.RuleID, "reason": v.Reason, "evidence": v.EvidencePath})
+		}
+		return fmt.Errorf("guardian blocked spawn for %s: %s", ticketID, dec.Reason)
+	case guardian.ResultWarn:
+		for _, v := range guardianViolations(dec) {
+			_ = w.appendEvent("guardian_warn", ticketID, map[string]any{"event": "before_spawn", "rule": v.RuleID, "reason": v.Reason, "evidence": v.EvidencePath})
+		}
 	}
 
 	branch := strings.TrimSpace(tk.Branch)
@@ -855,12 +875,6 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		if strings.TrimSpace(createdPath) != "" {
 			workDir = createdPath
 		}
-	}
-
-	srcPrompt := filepath.Join(w.config.Project.PromptDir, ticketID+".md")
-	promptBody, err := os.ReadFile(srcPrompt)
-	if err != nil {
-		return fmt.Errorf("missing prompt file for %s at %s", ticketID, srcPrompt)
 	}
 
 	// Assemble layered prompt: governance → spec → profile → ticket → footer
@@ -1473,21 +1487,50 @@ func buildFixPrompt(fixID, sourceTicket string, finding reviewFinding) string {
 	}
 	return b.String()
 }
+func guardianViolations(dec guardian.Decision) []guardian.Violation {
+	if len(dec.Violations) > 0 {
+		return dec.Violations
+	}
+	if strings.TrimSpace(dec.RuleID) == "" && strings.TrimSpace(dec.Reason) == "" {
+		return nil
+	}
+	return []guardian.Violation{{
+		RuleID:       strings.TrimSpace(dec.RuleID),
+		Reason:       strings.TrimSpace(dec.Reason),
+		EvidencePath: strings.TrimSpace(dec.EvidencePath),
+	}}
+}
+
 func (w *Watchdog) guardianCheck(ctx context.Context, ev guardian.Event, ticketID string, tk tracker.Ticket) (guardian.Decision, error) {
+	return w.guardianCheckWithContext(ctx, ev, ticketID, tk, nil)
+}
+
+func (w *Watchdog) guardianCheckWithContext(ctx context.Context, ev guardian.Event, ticketID string, tk tracker.Ticket, extra map[string]any) (guardian.Decision, error) {
 	if w == nil || w.guardian == nil {
 		return guardian.Decision{Result: guardian.ResultAllow}, nil
+	}
+	mode := "enforce"
+	if w != nil && w.config != nil {
+		if m := strings.TrimSpace(w.config.Guardian.Mode); m != "" {
+			mode = m
+		}
+	}
+	reqCtx := map[string]any{
+		"type":          tk.Type,
+		"feature":       tk.Feature,
+		"profile":       strings.TrimSpace(tk.Profile),
+		"verify_cmd":    strings.TrimSpace(tk.VerifyCmd),
+		"guardian_mode": strings.ToLower(strings.TrimSpace(mode)),
+	}
+	for k, v := range extra {
+		reqCtx[k] = v
 	}
 	dec, err := w.guardian.Evaluate(ctx, guardian.Request{
 		Event:    ev,
 		TicketID: ticketID,
 		Phase:    tk.Phase,
 		RunID:    strings.TrimSpace(tk.RunID),
-		Context: map[string]any{
-			"type":       tk.Type,
-			"feature":    tk.Feature,
-			"profile":    strings.TrimSpace(tk.Profile),
-			"verify_cmd": strings.TrimSpace(tk.VerifyCmd),
-		},
+		Context:  reqCtx,
 	})
 	if err != nil {
 		return guardian.Decision{Result: guardian.ResultWarn, Reason: err.Error()}, nil
