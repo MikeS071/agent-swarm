@@ -11,6 +11,16 @@ import (
 func TestRunPrepChecks_PostBuildMemEnforcesProfileAndPromptIntent(t *testing.T) {
 	root := t.TempDir()
 	promptDir := filepath.Join(root, "swarm", "prompts")
+	writePath(t, filepath.Join(root, ".agents", "lifecycle-policy.toml"), `[profiles.by_ticket_type]
+int = "code-agent"
+gap = "code-reviewer"
+tst = "e2e-runner"
+review = "code-reviewer"
+sec = "security-reviewer"
+doc = "doc-updater"
+clean = "refactor-cleaner"
+mem = "doc-updater"
+`)
 	writePath(t, filepath.Join(promptDir, "mem-tp.md"), `# mem-tp
 ## Objective
 Run post-build step "mem" for feature "tp".
@@ -68,6 +78,16 @@ mode: Review
 func TestRunPrepChecks_DocTicketValidIntentPasses(t *testing.T) {
 	root := t.TempDir()
 	promptDir := filepath.Join(root, "swarm", "prompts")
+	writePath(t, filepath.Join(root, ".agents", "lifecycle-policy.toml"), `[profiles.by_ticket_type]
+int = "code-agent"
+gap = "code-reviewer"
+tst = "e2e-runner"
+review = "code-reviewer"
+sec = "security-reviewer"
+doc = "doc-updater"
+clean = "refactor-cleaner"
+mem = "doc-updater"
+`)
 	writePath(t, filepath.Join(promptDir, "doc-tp.md"), `# doc-tp
 ## Objective
 Update docs
@@ -112,6 +132,16 @@ mode: Development
 func TestRunPrepChecks_ProfileFrontmatterMustMatch(t *testing.T) {
 	root := t.TempDir()
 	promptDir := filepath.Join(root, "swarm", "prompts")
+	writePath(t, filepath.Join(root, ".agents", "lifecycle-policy.toml"), `[profiles.by_ticket_type]
+int = "code-agent"
+gap = "code-reviewer"
+tst = "e2e-runner"
+review = "code-reviewer"
+sec = "security-reviewer"
+doc = "doc-updater"
+clean = "refactor-cleaner"
+mem = "doc-updater"
+`)
 	writePath(t, filepath.Join(promptDir, "tp-01.md"), `# tp-01
 ## Objective
 Implement

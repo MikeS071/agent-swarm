@@ -1,0 +1,11 @@
+version = 1
+
+[profiles.by_ticket_type]
+int = "code-agent"
+gap = "code-reviewer"
+tst = "e2e-runner"
+review = "code-reviewer"
+sec = "security-reviewer"
+doc = "doc-updater"
+clean = "refactor-cleaner"
+mem = "doc-updater"

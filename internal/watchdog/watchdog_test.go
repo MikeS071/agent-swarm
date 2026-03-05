@@ -383,7 +383,7 @@ func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 		profile  string
 		ticketTy string
 	}{
-		{id: "int-cch", status: tracker.StatusRunning, depends: []string{"cch-01", "cch-02"}, ticketTy: "int"},
+		{id: "int-cch", status: tracker.StatusRunning, depends: []string{"cch-01", "cch-02"}, profile: "code-agent", ticketTy: "int"},
 		{id: "gap-cch", status: tracker.StatusTodo, depends: []string{"int-cch"}, profile: "code-reviewer", ticketTy: "gap"},
 		{id: "tst-cch", status: tracker.StatusTodo, depends: []string{"int-cch"}, profile: "e2e-runner", ticketTy: "tst"},
 		{id: "review-cch", status: tracker.StatusTodo, depends: []string{"gap-cch", "tst-cch"}, profile: "code-reviewer", ticketTy: "review"},

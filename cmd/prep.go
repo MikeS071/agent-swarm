@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/MikeS071/agent-swarm/internal/config"
+	"github.com/MikeS071/agent-swarm/internal/lifecycle"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
 	"github.com/spf13/cobra"
 )
@@ -22,6 +23,14 @@ type prepIssue struct {
 func runPrepChecks(cfg *config.Config, tr *tracker.Tracker, promptDir string) []prepIssue {
 	issues := make([]prepIssue, 0)
 	projectRoot := strings.TrimSpace(cfg.Project.Repo)
+	policyPath := strings.TrimSpace(cfg.Lifecycle.PolicyFile)
+	if policyPath != "" && !filepath.IsAbs(policyPath) {
+		policyPath = filepath.Join(projectRoot, policyPath)
+	}
+	profileMap, policyErr := lifecycle.LoadProfileMap(policyPath)
+	if policyErr != nil {
+		issues = append(issues, prepIssue{Field: "lifecycle.policy_file", Reason: policyErr.Error()})
+	}
 
 	for id, tk := range tr.Tickets {
 		if tk.Status == tracker.StatusDone {
@@ -68,7 +77,7 @@ func runPrepChecks(cfg *config.Config, tr *tracker.Tracker, promptDir string) []
 			}
 		}
 
-		if expected := expectedProfileForType(ticketType); expected != "" && profile != "" && profile != expected {
+		if expected := lifecycle.ProfileForTicketType(profileMap, ticketType); expected != "" && profile != "" && profile != expected {
 			issues = append(issues, prepIssue{Ticket: id, Field: "profile", Reason: fmt.Sprintf("ticket type %q should use profile %q (got %q)", ticketType, expected, profile)})
 		}
 
@@ -88,25 +97,6 @@ func runPrepChecks(cfg *config.Config, tr *tracker.Tracker, promptDir string) []
 		return issues[i].Ticket < issues[j].Ticket
 	})
 	return issues
-}
-
-func expectedProfileForType(ticketType string) string {
-	switch strings.TrimSpace(ticketType) {
-	case "int":
-		return "code-agent"
-	case "gap", "review":
-		return "code-reviewer"
-	case "tst":
-		return "e2e-runner"
-	case "sec":
-		return "security-reviewer"
-	case "doc", "mem":
-		return "doc-updater"
-	case "clean":
-		return "refactor-cleaner"
-	default:
-		return ""
-	}
 }
 
 func requiredPromptSnippets(ticketType string) []string {

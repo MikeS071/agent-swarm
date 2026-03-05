@@ -171,6 +171,13 @@ func scaffoldProject(project string) error {
 	}
 	copied += n
 
+	// Lifecycle policy
+	n, err = copyEmbedDir(assets, "assets/lifecycle-policy.toml", filepath.Join(root, ".agents"))
+	if err != nil {
+		return fmt.Errorf("copy lifecycle-policy.toml: %w", err)
+	}
+	copied += n
+
 	// Skills
 	n, err = copyEmbedTree(assets, "assets/skills", filepath.Join(root, ".agents", "skills"))
 	if err != nil {
