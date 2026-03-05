@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,8 +32,8 @@ func TestScaffoldProjectCreatesExpectedLayout(t *testing.T) {
 		}
 	}
 
-	if _, err := os.Stat(filepath.Join(root, "swarm", "tracker.json")); err != nil {
-		t.Fatalf("expected tracker.json to exist: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "swarm", "tracker.seed.json")); err != nil {
+		t.Fatalf("expected tracker.seed.json to exist: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "AGENTS.md")); err != nil {
 		t.Fatalf("expected AGENTS.md to exist: %v", err)
@@ -43,6 +45,9 @@ func TestScaffoldProjectCreatesExpectedLayout(t *testing.T) {
 	}
 	if cfg.Project.Name != "my-project" {
 		t.Fatalf("project name = %q, want %q", cfg.Project.Name, "my-project")
+	}
+	if _, err := os.Stat(cfg.Project.Tracker); err != nil {
+		t.Fatalf("expected state tracker to exist at %s: %v", cfg.Project.Tracker, err)
 	}
 }
 
@@ -167,5 +172,69 @@ func TestScaffoldProjectErrorsWhenLegacyArchivePathIsBlocked(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "archive legacy workflow files") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestScaffoldProjectRegistersProjectInOpenClawRegistry(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "my-reg-project")
+	registryPath := filepath.Join(t.TempDir(), "projects.json")
+	if err := os.Setenv("OPENCLAW_PROJECTS_REGISTRY", registryPath); err != nil {
+		t.Fatalf("set env: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("OPENCLAW_PROJECTS_REGISTRY") })
+
+	if err := scaffoldProject(root); err != nil {
+		t.Fatalf("scaffoldProject: %v", err)
+	}
+
+	b, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	var reg map[string]map[string]any
+	if err := json.Unmarshal(b, &reg); err != nil {
+		t.Fatalf("parse registry: %v", err)
+	}
+	entry, ok := reg["my-reg-project"]
+	if !ok {
+		t.Fatalf("expected my-reg-project in registry")
+	}
+	expectedTrackerSuffix := filepath.Join(".local", "state", "agent-swarm", "projects", "my-reg-project", "tracker.json")
+	if got, _ := entry["tracker"].(string); !strings.HasSuffix(got, expectedTrackerSuffix) {
+		t.Fatalf("tracker=%q want suffix %q", got, expectedTrackerSuffix)
+	}
+	if got, _ := entry["promptDir"].(string); got != filepath.Join(root, "swarm", "prompts") {
+		t.Fatalf("promptDir=%q want %q", got, filepath.Join(root, "swarm", "prompts"))
+	}
+}
+
+func TestScaffoldProjectBootstrapsGitRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root := filepath.Join(t.TempDir(), "git-bootstrap-project")
+	registryPath := filepath.Join(t.TempDir(), "projects.json")
+	if err := os.Setenv("OPENCLAW_PROJECTS_REGISTRY", registryPath); err != nil {
+		t.Fatalf("set env: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("OPENCLAW_PROJECTS_REGISTRY") })
+
+	if err := scaffoldProject(root); err != nil {
+		t.Fatalf("scaffoldProject: %v", err)
+	}
+
+	cmd := exec.Command("git", "-C", root, "rev-parse", "--is-inside-work-tree")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("expected git repo, err=%v out=%s", err, string(out))
+	}
+	cmd = exec.Command("git", "-C", root, "rev-parse", "--verify", "refs/heads/main")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("expected main branch, err=%v out=%s", err, string(out))
+	}
+	cmd = exec.Command("git", "-C", root, "rev-parse", "--verify", "HEAD")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("expected initial commit, err=%v out=%s", err, string(out))
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/MikeS071/agent-swarm/internal/config"
+	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -24,6 +25,33 @@ var installUser bool
 var installInterval string
 var installUninstall bool
 
+func ensureWatchdogInstalledForConfig(configPath string) error {
+	absCfg, err := filepath.Abs(configPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(absCfg)
+	if err != nil {
+		return err
+	}
+	interval := strings.TrimSpace(cfg.Install.Interval)
+	if interval == "" {
+		interval = "5m"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	method := strings.TrimSpace(cfg.Install.Method)
+	if method == "" {
+		method = detectInstallMethod(runtime.GOOS, pathExists)
+	}
+	if err := installWatchdog(method, home, interval, true, resolveSwarmBinary()); err != nil {
+		return err
+	}
+	return verifyInstall()
+}
+
 var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install or uninstall automatic swarm watch scheduling",
@@ -36,14 +64,6 @@ var installCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		interval := strings.TrimSpace(installInterval)
-		if interval == "" {
-			interval = strings.TrimSpace(cfg.Install.Interval)
-		}
-		if interval == "" {
-			interval = "5m"
-		}
-
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return err
@@ -52,17 +72,18 @@ var installCmd = &cobra.Command{
 		if method == "" {
 			method = detectInstallMethod(runtime.GOOS, pathExists)
 		}
-
 		if installUninstall {
 			return uninstallWatchdog(method, home)
 		}
-		if err := installWatchdog(method, home, interval, installUser); err != nil {
-			return err
+		interval := strings.TrimSpace(installInterval)
+		if interval != "" {
+			cfg.Install.Interval = interval
+			cfgBytes, merr := toml.Marshal(cfg)
+			if merr == nil {
+				_ = os.WriteFile(absCfg, cfgBytes, 0o644)
+			}
 		}
-		if err := verifyInstall(); err != nil {
-			return err
-		}
-		return nil
+		return ensureWatchdogInstalledForConfig(absCfg)
 	},
 }
 
@@ -71,6 +92,13 @@ func init() {
 	installCmd.Flags().StringVar(&installInterval, "interval", "5m", "watchdog interval")
 	installCmd.Flags().BoolVar(&installUninstall, "uninstall", false, "remove existing installation")
 	rootCmd.AddCommand(installCmd)
+}
+
+func resolveSwarmBinary() string {
+	if exe, err := os.Executable(); err == nil && strings.TrimSpace(exe) != "" {
+		return exe
+	}
+	return "swarm"
 }
 
 func detectInstallMethod(goos string, exists func(string) bool) string {
@@ -92,14 +120,14 @@ func pathExists(path string) bool {
 	return err == nil
 }
 
-func installWatchdog(method, home, interval string, _ bool) error {
+func installWatchdog(method, home, interval string, _ bool, swarmBin string) error {
 	switch method {
 	case installMethodSystemd:
-		return installSystemd(home, interval)
+		return installSystemd(home, interval, swarmBin)
 	case installMethodLaunchd:
-		return installLaunchd(home, interval)
+		return installLaunchd(home, interval, swarmBin)
 	case installMethodCron:
-		return installCron(interval)
+		return installCron(interval, swarmBin)
 	default:
 		return fmt.Errorf("unsupported install method %q", method)
 	}
@@ -126,7 +154,7 @@ func uninstallWatchdog(method, home string) error {
 		lines := strings.Split(string(out), "\n")
 		filtered := make([]string, 0, len(lines))
 		for _, line := range lines {
-			if strings.Contains(line, "swarm watch --once") {
+			if strings.Contains(line, "swarm watch --once") || strings.Contains(line, "swarm watchdog run-all-once") {
 				continue
 			}
 			if strings.TrimSpace(line) == "" {
@@ -140,18 +168,18 @@ func uninstallWatchdog(method, home string) error {
 	}
 }
 
-func installSystemd(home, interval string) error {
+func installSystemd(home, interval, swarmBin string) error {
 	dir := filepath.Join(home, ".config/systemd/user")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	service := `[Unit]
+	service := fmt.Sprintf(`[Unit]
 Description=agent-swarm watchdog
 
 [Service]
 Type=oneshot
-ExecStart=swarm watch --once
-`
+ExecStart=%s watchdog run-all-once
+`, swarmBin)
 	timer := `[Unit]
 Description=agent-swarm watchdog timer
 
@@ -175,7 +203,7 @@ WantedBy=timers.target
 	return runCmdNoOutput("systemctl", "--user", "enable", "--now", "swarm-watchdog.timer")
 }
 
-func installLaunchd(home, interval string) error {
+func installLaunchd(home, interval, swarmBin string) error {
 	dur, err := time.ParseDuration(interval)
 	if err != nil {
 		return fmt.Errorf("parse interval: %w", err)
@@ -195,9 +223,9 @@ func installLaunchd(home, interval string) error {
   <key>Label</key><string>com.agentswarm.watchdog</string>
   <key>ProgramArguments</key>
   <array>
-    <string>swarm</string>
-    <string>watch</string>
-    <string>--once</string>
+    <string>` + swarmBin + `</string>
+    <string>watchdog</string>
+    <string>run-all-once</string>
   </array>
   <key>StartInterval</key><integer>` + strconv.Itoa(seconds) + `</integer>
   <key>RunAtLoad</key><true/>
@@ -212,12 +240,12 @@ func installLaunchd(home, interval string) error {
 	return runCmdNoOutput("launchctl", "load", path)
 }
 
-func installCron(interval string) error {
+func installCron(interval, swarmBin string) error {
 	expr, err := durationToCron(interval)
 	if err != nil {
 		return err
 	}
-	line := expr + " swarm watch --once"
+	line := expr + " " + shellEscapeForCron(swarmBin) + " watchdog run-all-once"
 	out, _ := exec.Command("crontab", "-l").CombinedOutput()
 	current := strings.TrimSpace(string(out))
 	if strings.Contains(current, line) {
@@ -229,6 +257,17 @@ func installCron(interval string) error {
 	}
 	lines = append(lines, line)
 	return writeCrontab(lines)
+}
+
+func shellEscapeForCron(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "swarm"
+	}
+	if strings.ContainsAny(v, " 	") {
+		return `"` + strings.ReplaceAll(v, `"`, `\"`) + `"`
+	}
+	return v
 }
 
 func durationToCron(interval string) (string, error) {
@@ -270,7 +309,8 @@ func runCmdNoOutput(name string, args ...string) error {
 }
 
 func verifyInstall() error {
-	cmd := exec.Command("swarm", "watch", "--dry-run")
+	bin := resolveSwarmBinary()
+	cmd := exec.Command(bin, "watchdog", "run-all-once", "--dry-run")
 	if out, err := cmd.CombinedOutput(); err == nil {
 		return nil
 	} else {
@@ -278,7 +318,7 @@ func verifyInstall() error {
 		if e != nil {
 			return fmt.Errorf("verify install: %w (%s)", err, strings.TrimSpace(string(out)))
 		}
-		fallback := exec.Command(exe, "watch", "--dry-run")
+		fallback := exec.Command(exe, "watchdog", "run-all-once", "--dry-run")
 		fallbackOut, fallbackErr := fallback.CombinedOutput()
 		if fallbackErr != nil {
 			return fmt.Errorf("verify install: %w (%s); fallback: %v (%s)", err, strings.TrimSpace(string(out)), fallbackErr, strings.TrimSpace(string(fallbackOut)))

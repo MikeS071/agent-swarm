@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 type Tracker struct {
@@ -22,9 +23,13 @@ type Ticket struct {
 	Depends        []string `json:"depends"`
 	Type           string   `json:"type,omitempty"`
 	Feature        string   `json:"feature,omitempty"`
+	RunID          string   `json:"run_id,omitempty"`
 	Branch         string   `json:"branch,omitempty"`
 	Desc           string   `json:"desc,omitempty"`
 	Profile        string   `json:"profile,omitempty"`
+	VerifyCmd      string   `json:"verify_cmd,omitempty"`
+	RetryCount     int      `json:"retry_count,omitempty"`
+	Priority       int      `json:"priority,omitempty"`
 	SHA            string   `json:"sha,omitempty"`
 	StartedAt      string   `json:"startedAt,omitempty"`
 	FinishedAt     string   `json:"finishedAt,omitempty"`
@@ -83,12 +88,27 @@ func (t *Tracker) SaveTo(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir tracker dir: %w", err)
 	}
+	lockPath := path + ".lock"
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return fmt.Errorf("open tracker lock %s: %w", lockPath, err)
+	}
+	defer lf.Close()
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("lock tracker %s: %w", path, err)
+	}
+	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+
 	b, err := json.MarshalIndent(t, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal tracker: %w", err)
 	}
-	if err := os.WriteFile(path, b, 0o644); err != nil {
-		return fmt.Errorf("write tracker %s: %w", path, err)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return fmt.Errorf("write tracker temp %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("replace tracker %s: %w", path, err)
 	}
 	return nil
 }
@@ -134,6 +154,14 @@ func (t *Tracker) GetSpawnable() []string {
 			out = append(out, id)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		pi := t.Tickets[out[i]].Priority
+		pj := t.Tickets[out[j]].Priority
+		if pi == pj {
+			return out[i] < out[j]
+		}
+		return pi > pj
+	})
 	return out
 }
 
@@ -289,6 +317,7 @@ func (t *Tracker) MarkDone(id, sha string) error {
 	}
 	tk.Status = StatusDone
 	tk.SHA = sha
+	tk.RetryCount = 0
 	t.Tickets[id] = tk
 	return nil
 }

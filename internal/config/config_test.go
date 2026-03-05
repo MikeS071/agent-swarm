@@ -89,11 +89,13 @@ type = "stdout"
 	}
 
 	def := Default()
-	if cfg.Project.Repo != def.Project.Repo {
-		t.Fatalf("expected default repo %q, got %q", def.Project.Repo, cfg.Project.Repo)
+	wantRepo := filepath.Clean(dir)
+	if cfg.Project.Repo != wantRepo {
+		t.Fatalf("expected resolved default repo %q, got %q", wantRepo, cfg.Project.Repo)
 	}
-	if cfg.Project.Tracker != def.Project.Tracker {
-		t.Fatalf("expected default tracker %q, got %q", def.Project.Tracker, cfg.Project.Tracker)
+	wantTracker := filepath.Join(wantRepo, def.Project.Tracker)
+	if cfg.Project.Tracker != wantTracker {
+		t.Fatalf("expected resolved default tracker %q, got %q", wantTracker, cfg.Project.Tracker)
 	}
 	if cfg.Backend.Model != def.Backend.Model {
 		t.Fatalf("expected default model %q, got %q", def.Backend.Model, cfg.Backend.Model)
@@ -147,17 +149,32 @@ type = "stdout"
 	}
 
 	def := Default()
-	if cfg.Project.FeaturesDir != def.Project.FeaturesDir {
-		t.Fatalf("expected default features_dir %q, got %q", def.Project.FeaturesDir, cfg.Project.FeaturesDir)
+	wantFeatures := filepath.Join(dir, def.Project.FeaturesDir)
+	if cfg.Project.FeaturesDir != wantFeatures {
+		t.Fatalf("expected resolved default features_dir %q, got %q", wantFeatures, cfg.Project.FeaturesDir)
 	}
-	if !reflect.DeepEqual(cfg.Profiles, def.Profiles) {
-		t.Fatalf("expected default profiles config %+v, got %+v", def.Profiles, cfg.Profiles)
+	wantProfiles := def.Profiles
+	wantProfiles.Architect = filepath.Join(dir, def.Profiles.Architect)
+	wantProfiles.CodeAgent = filepath.Join(dir, def.Profiles.CodeAgent)
+	wantProfiles.TDDGuide = filepath.Join(dir, def.Profiles.TDDGuide)
+	wantProfiles.CodeReviewer = filepath.Join(dir, def.Profiles.CodeReviewer)
+	wantProfiles.SecurityReviewer = filepath.Join(dir, def.Profiles.SecurityReviewer)
+	wantProfiles.E2ERunner = filepath.Join(dir, def.Profiles.E2ERunner)
+	wantProfiles.DocUpdater = filepath.Join(dir, def.Profiles.DocUpdater)
+	wantProfiles.RefactorCleaner = filepath.Join(dir, def.Profiles.RefactorCleaner)
+	wantProfiles.BuildErrorResolver = filepath.Join(dir, def.Profiles.BuildErrorResolver)
+	if !reflect.DeepEqual(cfg.Profiles, wantProfiles) {
+		t.Fatalf("expected resolved default profiles config %+v, got %+v", wantProfiles, cfg.Profiles)
 	}
 	if !reflect.DeepEqual(cfg.PostBuild.Order, def.PostBuild.Order) {
 		t.Fatalf("expected default post_build.order %v, got %v", def.PostBuild.Order, cfg.PostBuild.Order)
 	}
 	if !reflect.DeepEqual(cfg.PostBuild.ParallelGroups, def.PostBuild.ParallelGroups) {
 		t.Fatalf("expected default post_build.parallel_groups %v, got %v", def.PostBuild.ParallelGroups, cfg.PostBuild.ParallelGroups)
+	}
+	wantLifecyclePolicy := filepath.Join(dir, def.Lifecycle.PolicyFile)
+	if cfg.Lifecycle.PolicyFile != wantLifecyclePolicy {
+		t.Fatalf("expected resolved lifecycle.policy_file %q, got %q", wantLifecyclePolicy, cfg.Lifecycle.PolicyFile)
 	}
 }
 
@@ -184,6 +201,9 @@ security_reviewer = "profiles/custom-security.md"
 [post_build]
 order = ["int", "review", "mem"]
 parallel_groups = [["review", "sec"]]
+
+[lifecycle]
+policy_file = ".agents/custom-lifecycle-policy.toml"
 `)
 
 	cfg, err := Load(path)
@@ -191,14 +211,17 @@ parallel_groups = [["review", "sec"]]
 		t.Fatalf("Load() error = %v", err)
 	}
 
-	if cfg.Project.FeaturesDir != "custom/features" {
-		t.Fatalf("expected features_dir custom/features, got %q", cfg.Project.FeaturesDir)
+	wantFeatures := filepath.Join(dir, "custom/features")
+	if cfg.Project.FeaturesDir != wantFeatures {
+		t.Fatalf("expected resolved features_dir %q, got %q", wantFeatures, cfg.Project.FeaturesDir)
 	}
-	if cfg.Profiles.CodeAgent != "profiles/custom-code-agent.md" {
-		t.Fatalf("expected profiles.code_agent override, got %q", cfg.Profiles.CodeAgent)
+	wantProfile := filepath.Join(dir, "profiles/custom-code-agent.md")
+	if cfg.Profiles.CodeAgent != wantProfile {
+		t.Fatalf("expected resolved profiles.code_agent %q, got %q", wantProfile, cfg.Profiles.CodeAgent)
 	}
-	if cfg.Profiles.SecurityReviewer != "profiles/custom-security.md" {
-		t.Fatalf("expected profiles.security_reviewer override, got %q", cfg.Profiles.SecurityReviewer)
+	wantSecProfile := filepath.Join(dir, "profiles/custom-security.md")
+	if cfg.Profiles.SecurityReviewer != wantSecProfile {
+		t.Fatalf("expected resolved profiles.security_reviewer %q, got %q", wantSecProfile, cfg.Profiles.SecurityReviewer)
 	}
 	if !reflect.DeepEqual(cfg.PostBuild.Order, []string{"int", "review", "mem"}) {
 		t.Fatalf("expected custom post_build.order, got %v", cfg.PostBuild.Order)
@@ -206,9 +229,13 @@ parallel_groups = [["review", "sec"]]
 	if !reflect.DeepEqual(cfg.PostBuild.ParallelGroups, [][]string{{"review", "sec"}}) {
 		t.Fatalf("expected custom post_build.parallel_groups, got %v", cfg.PostBuild.ParallelGroups)
 	}
+	wantPolicy := filepath.Join(dir, ".agents/custom-lifecycle-policy.toml")
+	if cfg.Lifecycle.PolicyFile != wantPolicy {
+		t.Fatalf("expected resolved lifecycle.policy_file %q, got %q", wantPolicy, cfg.Lifecycle.PolicyFile)
+	}
 }
 
-func TestLoadEmptyFeaturesDirFails(t *testing.T) {
+func TestLoadEmptyFeaturesDirDefaults(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := writeFile(t, dir, "swarm.toml", `
@@ -225,8 +252,48 @@ type = "stdout"
 [watchdog]
 `)
 
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error for empty project.features_dir")
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error for empty project.features_dir: %v", err)
+	}
+	wantFeatures := filepath.Join(dir, "swarm/features")
+	if got.Project.FeaturesDir != wantFeatures {
+		t.Fatalf("features_dir=%q want %q", got.Project.FeaturesDir, wantFeatures)
+	}
+}
+
+func TestLoadResolvesPathsRelativeToConfigDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := writeFile(t, dir, "swarm.toml", `
+[project]
+name = "myproject"
+repo = "."
+tracker = "swarm/tracker.json"
+prompt_dir = "swarm/prompts"
+features_dir = "swarm/features"
+
+[backend]
+type = "codex-tmux"
+
+[notifications]
+type = "stdout"
+
+[watchdog]
+`)
+
+	old, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(old) })
+	_ = os.Chdir("/")
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Project.Repo != filepath.Clean(dir) {
+		t.Fatalf("repo=%q want %q", cfg.Project.Repo, filepath.Clean(dir))
+	}
+	if cfg.Project.Tracker != filepath.Join(dir, "swarm/tracker.json") {
+		t.Fatalf("tracker=%q", cfg.Project.Tracker)
 	}
 }

@@ -2,10 +2,13 @@ package watchdog
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -16,6 +19,8 @@ import (
 	"github.com/MikeS071/agent-swarm/internal/backend"
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
+	"github.com/MikeS071/agent-swarm/internal/guardian"
+	"github.com/MikeS071/agent-swarm/internal/lifecycle"
 	"github.com/MikeS071/agent-swarm/internal/notify"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
 	"github.com/MikeS071/agent-swarm/internal/worktree"
@@ -137,13 +142,13 @@ type Watchdog struct {
 	worktree   *worktree.Manager
 	notifier   notify.Notifier
 	events     *EventLog
+	guardian   guardian.Evaluator
 
 	backendFactory func(backendType string) (backend.AgentBackend, error)
 	backendCache   map[string]backend.AgentBackend
 	backendMu      sync.Mutex
 
 	dryRun         bool
-	retries        map[string]int
 	spawnErrors    map[string]int
 	stuckAlerts    map[string]bool
 	gateNoticed    bool
@@ -191,8 +196,8 @@ func New(
 		worktree:     wt,
 		notifier:     n,
 		events:       NewEventLog(eventsPath),
+		guardian:     guardian.NoopEvaluator{},
 		backendCache: cache,
-		retries:      map[string]int{},
 		spawnErrors:  map[string]int{},
 		stuckAlerts:  map[string]bool{},
 	}
@@ -231,7 +236,68 @@ func (w *Watchdog) SetConfigPath(p string) {
 	}
 }
 
+func (w *Watchdog) SetGuardian(g guardian.Evaluator) {
+	if w == nil {
+		return
+	}
+	if g == nil {
+		w.guardian = guardian.NoopEvaluator{}
+		return
+	}
+	w.guardian = g
+}
+
 // Run executes the watchdog loop at configured interval until ctx cancellation.
+func (w *Watchdog) ReconcileRunning(ctx context.Context) error {
+	if w == nil || w.tracker == nil {
+		return nil
+	}
+	for _, ticketID := range runningTicketIDs(w.tracker) {
+		tk := w.tracker.Tickets[ticketID]
+		handle := w.sessionHandleForTicket(ticketID, tk)
+		runningBackend, _, err := w.runtimeBackendForTicket(tk)
+		if err != nil {
+			continue
+		}
+		exitMeta, hasExitMarker := w.readExitMarker(ticketID)
+		if !(hasExitMarker || runningBackend.HasExited(handle)) {
+			continue
+		}
+		hasCommits, sha, err := w.worktree.HasCommits(ticketID, w.config.Project.BaseBranch)
+		if err != nil {
+			hasCommits = false
+		}
+		if hasCommits {
+			gdec, _ := w.guardianCheck(ctx, guardian.EventBeforeMarkDone, ticketID, tk)
+			if gdec.Result == guardian.ResultBlock {
+				_ = w.dispatcher.MarkFailed(ticketID)
+				_ = w.saveTracker()
+				continue
+			}
+			if ok, _ := w.verifyTicket(ticketID, tk); ok {
+				tk.RetryCount = 0
+				w.tracker.Tickets[ticketID] = tk
+				_, _ = w.dispatcher.MarkDone(ticketID, sha)
+				d := map[string]any{"sha": sha}
+				if hasExitMarker {
+					d["process_exit_code"] = exitMeta.ProcessExitCode
+				}
+				_ = w.appendEvent("ticket_done", ticketID, d)
+				_ = w.saveTracker()
+				continue
+			}
+		}
+		_ = w.dispatcher.MarkFailed(ticketID)
+		_ = w.saveTracker()
+		d := map[string]any{"reason": "reconcile_failed"}
+		if hasExitMarker {
+			d["process_exit_code"] = exitMeta.ProcessExitCode
+		}
+		_ = w.appendEvent("ticket_failed", ticketID, d)
+	}
+	return nil
+}
+
 func (w *Watchdog) Run(ctx context.Context) error {
 	interval := 5 * time.Minute
 	if parsed, err := time.ParseDuration(strings.TrimSpace(w.config.Watchdog.Interval)); err == nil && parsed > 0 {
@@ -275,15 +341,27 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		}
 	}
 
-	// Re-read tracker from disk to pick up external changes (e.g. TUI phase gate approval).
-	if w.tracker != nil && w.config != nil && w.config.Project.Tracker != "" {
+	// Re-read tracker from disk and merge externally-added tickets to avoid clobbering.
+	if w.config != nil && w.config.Project.Tracker != "" {
 		if fresh, err := tracker.Load(w.config.Project.Tracker); err == nil {
-			// Preserve in-memory state that disk may not have (running sessions etc are already in tickets).
-			// But always adopt the disk unlocked_phase if higher (TUI may have approved a gate).
-			if fresh.UnlockedPhase > w.tracker.UnlockedPhase {
-				w.tracker.UnlockedPhase = fresh.UnlockedPhase
-				w.dispatcher.SetUnlockedPhase(fresh.UnlockedPhase)
+			if w.tracker != nil {
+				if w.tracker.Tickets == nil {
+					w.tracker.Tickets = map[string]tracker.Ticket{}
+				}
+				for id, tk := range fresh.Tickets {
+					if _, ok := w.tracker.Tickets[id]; !ok {
+						w.tracker.Tickets[id] = tk
+					}
+				}
+				if fresh.UnlockedPhase > w.tracker.UnlockedPhase {
+					w.tracker.UnlockedPhase = fresh.UnlockedPhase
+					if w.dispatcher != nil {
+						w.dispatcher.SetUnlockedPhase(fresh.UnlockedPhase)
+					}
+				}
 			}
+		} else {
+			w.log("WARN: reload tracker from disk failed: %v", err)
 		}
 	}
 
@@ -301,7 +379,8 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			continue
 		}
 
-		if runningBackend.HasExited(handle) {
+		exitMeta, hasExitMarker := w.readExitMarker(ticketID)
+		if hasExitMarker || runningBackend.HasExited(handle) {
 			hasCommits, sha, err := w.worktree.HasCommits(ticketID, w.config.Project.BaseBranch)
 			if err != nil {
 				w.log("WARN: HasCommits(%s) error: %v — treating as no commits", ticketID, err)
@@ -313,8 +392,45 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would mark %s done (%s)", ticketID, sha))
 					continue
 				}
+				gdec, _ := w.guardianCheck(ctx, guardian.EventBeforeMarkDone, ticketID, tk)
+				if gdec.Result == guardian.ResultBlock {
+					_ = w.dispatcher.MarkFailed(ticketID)
+					_ = w.saveTracker()
+					_ = w.appendEvent("guardian_block", ticketID, map[string]any{"event": "before_mark_done", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath})
+					_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked completion for %s", ticketID))
+					continue
+				}
+				if ok, vErr := w.verifyTicket(ticketID, tk); !ok {
+					tk.RetryCount++
+					attempt := tk.RetryCount
+					w.tracker.Tickets[ticketID] = tk
+					if attempt < w.maxRetries() {
+						data := map[string]any{"attempt": attempt, "error": errString(vErr)}
+						if hasExitMarker {
+							data["process_exit_code"] = exitMeta.ProcessExitCode
+						}
+						_ = w.appendEvent("verify_failed_respawn", ticketID, data)
+						if err := w.saveTracker(); err != nil {
+							w.log("WARN: saveTracker before verify respawn (%s): %v", ticketID, err)
+						}
+						if err := w.SpawnTicket(ctx, ticketID); err != nil {
+							w.log("WARN: respawn after verify fail (%s): %v", ticketID, err)
+						}
+						continue
+					}
+					_ = w.dispatcher.MarkFailed(ticketID)
+					_ = w.saveTracker()
+					data := map[string]any{"reason": "verify_failed", "error": errString(vErr), "attempt": attempt}
+					if hasExitMarker {
+						data["process_exit_code"] = exitMeta.ProcessExitCode
+					}
+					_ = w.appendEvent("ticket_failed", ticketID, data)
+					_ = w.notifier.Alert(ctx, fmt.Sprintf("ticket %s failed verification", ticketID))
+					continue
+				}
+				tk.RetryCount = 0
+				w.tracker.Tickets[ticketID] = tk
 				sig, spawnable := w.dispatcher.MarkDone(ticketID, sha)
-				delete(w.retries, ticketID)
 				if created, err := w.autoCreateFixTickets(ticketID); err != nil {
 					w.log("WARN: autoCreateFixTickets(%s): %v", ticketID, err)
 				} else if created > 0 {
@@ -325,7 +441,11 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					logFile := filepath.Join(filepath.Dir(w.config.Project.Tracker), "logs", ticketID+".log")
 					os.Remove(logFile)
 				}
-				if err := w.appendEvent("ticket_done", ticketID, map[string]any{"sha": sha}); err != nil {
+				doneData := map[string]any{"sha": sha}
+				if hasExitMarker {
+					doneData["process_exit_code"] = exitMeta.ProcessExitCode
+				}
+				if err := w.appendEvent("ticket_done", ticketID, doneData); err != nil {
 					w.log("WARN: appendEvent(ticket_done, %s): %v", ticketID, err)
 				}
 				if err := w.saveTracker(); err != nil {
@@ -339,15 +459,23 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				continue
 			}
 
-			w.retries[ticketID]++
-			attempt := w.retries[ticketID]
+			tk.RetryCount++
+			attempt := tk.RetryCount
+			w.tracker.Tickets[ticketID] = tk
 			if attempt < w.maxRetries() {
 				if w.dryRun {
 					_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would respawn %s (attempt %d)", ticketID, attempt))
 					continue
 				}
-				if err := w.appendEvent("respawn", ticketID, map[string]any{"attempt": attempt}); err != nil {
+				data := map[string]any{"attempt": attempt}
+				if hasExitMarker {
+					data["process_exit_code"] = exitMeta.ProcessExitCode
+				}
+				if err := w.appendEvent("respawn", ticketID, data); err != nil {
 					w.log("WARN: appendEvent(respawn, %s): %v", ticketID, err)
+				}
+				if err := w.saveTracker(); err != nil {
+					w.log("WARN: saveTracker before respawn (%s): %v", ticketID, err)
 				}
 				if err := w.SpawnTicket(ctx, ticketID); err != nil {
 					w.log("WARN: respawn SpawnTicket(%s): %v", ticketID, err)
@@ -365,7 +493,11 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			if err := w.saveTracker(); err != nil {
 				return err
 			}
-			if err := w.appendEvent("ticket_failed", ticketID, map[string]any{"attempt": attempt}); err != nil {
+			data := map[string]any{"attempt": attempt}
+			if hasExitMarker {
+				data["process_exit_code"] = exitMeta.ProcessExitCode
+			}
+			if err := w.appendEvent("ticket_failed", ticketID, data); err != nil {
 				return err
 			}
 			_ = w.notifier.Alert(ctx, fmt.Sprintf("ticket %s failed after %d attempts", ticketID, attempt))
@@ -429,14 +561,27 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 
 	sig, _ := w.dispatcher.Evaluate()
 	if sig == dispatcher.SignalPhaseGate {
+		phase := w.dispatcher.CurrentPhase()
+		gdec, _ := w.guardianCheck(ctx, guardian.EventPhaseTransition, "", tracker.Ticket{Phase: phase})
+		if gdec.Result == guardian.ResultBlock {
+			if !w.gateNoticed {
+				w.gateNoticed = true
+				_ = w.appendEvent("guardian_block", "", map[string]any{"event": "phase_transition", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath, "phase": phase})
+				_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked phase transition: %s", gdec.Reason))
+			}
+			return nil
+		}
 		if w.config.Project.AutoApprove {
 			_ = w.notifier.Info(ctx, "phase gate reached — auto-approving")
 			approvedSig, spawnable := w.dispatcher.ApprovePhaseGate()
 			if err := w.saveTracker(); err != nil {
 				w.log("WARN: saveTracker after phase gate: %v", err)
 			}
-			if err := w.appendEvent("phase_gate_auto_approved", "", nil); err != nil {
+			if err := w.appendEvent("phase_gate_auto_approved", "", map[string]any{"phase": phase}); err != nil {
 				w.log("WARN: appendEvent(phase_gate_auto_approved): %v", err)
+			}
+			if err := w.clearPhaseGateNotice(); err != nil {
+				w.log("WARN: clearPhaseGateNotice: %v", err)
 			}
 			if approvedSig == dispatcher.SignalSpawn && len(spawnable) > 0 && w.dispatcher.CanSpawnMore() {
 				slots := w.config.Project.MaxAgents
@@ -453,31 +598,316 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				}
 			}
 			w.gateNoticed = false
-		} else if !w.gateNoticed {
-			w.gateNoticed = true
-			if w.dryRun {
-				_ = w.notifier.Info(ctx, "[dry-run] phase gate reached")
-			} else {
-				if err := w.appendEvent("phase_gate", "", nil); err != nil {
-					w.log("WARN: appendEvent(phase_gate): %v", err)
-				}
-				_ = w.notifier.Info(ctx, "phase gate reached; run `swarm go` to continue")
+		} else {
+			if err := w.maybeNotifyPhaseGate(ctx, phase, w.dryRun); err != nil {
+				w.log("WARN: maybeNotifyPhaseGate: %v", err)
 			}
+			w.gateNoticed = true
 		}
 	} else {
 		w.gateNoticed = false
+		if err := w.clearPhaseGateNotice(); err != nil {
+			w.log("WARN: clearPhaseGateNotice: %v", err)
+		}
 	}
 
 	if sig == dispatcher.SignalAllDone && !w.completionSent {
-		w.completionSent = true
-		report := w.buildCompletionReport()
-		if err := w.appendEvent("project_complete", "", nil); err != nil {
-			w.log("WARN: appendEvent(project_complete): %v", err)
+		gdec, _ := w.guardianCheck(ctx, guardian.EventPostBuildDone, "", tracker.Ticket{Phase: w.dispatcher.CurrentPhase()})
+		if gdec.Result == guardian.ResultBlock {
+			_ = w.appendEvent("guardian_block", "", map[string]any{"event": "post_build_complete", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath})
+			_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked completion: %s", gdec.Reason))
+			return nil
 		}
-		_ = w.notifier.Alert(ctx, report)
+		signature := w.completionSignature()
+		if w.wasCompletionNotified(signature) {
+			w.completionSent = true
+		} else {
+			w.completionSent = true
+			report := w.buildCompletionReport()
+			if err := w.appendEvent("project_complete", "", nil); err != nil {
+				w.log("WARN: appendEvent(project_complete): %v", err)
+			}
+			_ = w.notifier.Alert(ctx, report)
+			if err := w.markCompletionNotified(signature); err != nil {
+				w.log("WARN: markCompletionNotified: %v", err)
+			}
+		}
 	}
 
+	if err := w.maybeSendStatusReport(ctx, sig); err != nil {
+		w.log("WARN: status report: %v", err)
+	}
+	w.runTelemetryMaintenance(time.Now().UTC())
+
 	return nil
+}
+
+func (w *Watchdog) maybeSendStatusReport(ctx context.Context, sig dispatcher.Signal) error {
+	if w == nil || w.config == nil || w.tracker == nil {
+		return nil
+	}
+	cfg := w.config.StatusReport
+	if !cfg.Enabled {
+		return nil
+	}
+	now := time.Now().UTC()
+	interval := 5 * time.Minute
+	if d, err := time.ParseDuration(strings.TrimSpace(cfg.Interval)); err == nil && d > 0 {
+		interval = d
+	}
+	stats := w.tracker.Stats()
+	running := stats.Running
+	if cfg.OnlyWhenRunning && running == 0 {
+		return nil
+	}
+
+	last, _ := w.readLastStatusReportAt()
+	if !last.IsZero() && now.Sub(last) < interval {
+		return nil
+	}
+
+	active := runningTicketIDs(w.tracker)
+	sort.Strings(active)
+	if len(active) > 5 {
+		active = active[:5]
+	}
+	msg := fmt.Sprintf("%s: done=%d running=%d todo=%d failed=%d", w.tracker.Project, stats.Done, stats.Running, stats.Todo, stats.Failed)
+	if len(active) > 0 {
+		msg += " | active: " + strings.Join(active, ", ")
+	}
+	if sig == dispatcher.SignalPhaseGate {
+		msg += " | blocked: PHASE_GATE | next: agent-swarm go"
+	} else if sig == dispatcher.SignalBlocked {
+		if stats.Failed > 0 {
+			msg += " | blocked: FAILED_TICKETS | next: fix/respawn failed"
+		} else {
+			msg += " | blocked: WAITING_DEPENDENCIES"
+		}
+	}
+	if err := w.notifier.Info(ctx, msg); err != nil {
+		return err
+	}
+	if err := w.writeLastStatusReportAt(now); err != nil {
+		w.log("WARN: writeLastStatusReportAt: %v", err)
+	}
+	_ = sig
+	return nil
+}
+
+func (w *Watchdog) statusReportMarkerPath() string {
+	if w == nil || w.config == nil || strings.TrimSpace(w.config.Project.Tracker) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(w.config.Project.Tracker), ".status-report-last")
+}
+
+func (w *Watchdog) readLastStatusReportAt() (time.Time, error) {
+	p := w.statusReportMarkerPath()
+	if p == "" {
+		return time.Time{}, nil
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return time.Time{}, err
+	}
+	raw := strings.TrimSpace(string(b))
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t, nil
+}
+
+func (w *Watchdog) writeLastStatusReportAt(ts time.Time) error {
+	p := w.statusReportMarkerPath()
+	if p == "" {
+		return nil
+	}
+	return os.WriteFile(p, []byte(ts.UTC().Format(time.RFC3339)+"\n"), 0o644)
+}
+
+type phaseGateNotice struct {
+	Phase        int    `json:"phase"`
+	FirstSeenAt  string `json:"first_seen_at"`
+	LastNoticeAt string `json:"last_notice_at"`
+}
+
+func (w *Watchdog) phaseGateNoticePath() string {
+	if w == nil || w.config == nil || strings.TrimSpace(w.config.Project.Tracker) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(w.config.Project.Tracker), ".phase-gate-last.json")
+}
+
+func (w *Watchdog) readPhaseGateNotice() (*phaseGateNotice, error) {
+	p := w.phaseGateNoticePath()
+	if p == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var n phaseGateNotice
+	if err := json.Unmarshal(b, &n); err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+func (w *Watchdog) writePhaseGateNotice(n phaseGateNotice) error {
+	p := w.phaseGateNoticePath()
+	if p == "" {
+		return nil
+	}
+	b, err := json.MarshalIndent(n, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, append(b, '\n'), 0o644)
+}
+
+func (w *Watchdog) clearPhaseGateNotice() error {
+	p := w.phaseGateNoticePath()
+	if p == "" {
+		return nil
+	}
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (w *Watchdog) maybeNotifyPhaseGate(ctx context.Context, phase int, dryRun bool) error {
+	now := time.Now().UTC()
+	notice, err := w.readPhaseGateNotice()
+	if err != nil {
+		return err
+	}
+
+	reminderInterval := 15 * time.Minute
+	if notice == nil || notice.Phase != phase {
+		if dryRun {
+			_ = w.notifier.Info(ctx, "[dry-run] phase gate reached")
+		} else {
+			if err := w.appendEvent("phase_gate", "", map[string]any{"phase": phase, "kind": "initial"}); err != nil {
+				w.log("WARN: appendEvent(phase_gate): %v", err)
+			}
+			_ = w.notifier.Info(ctx, fmt.Sprintf("phase %d gate reached; run `agent-swarm go` to continue", phase))
+		}
+		return w.writePhaseGateNotice(phaseGateNotice{
+			Phase:        phase,
+			FirstSeenAt:  now.Format(time.RFC3339),
+			LastNoticeAt: now.Format(time.RFC3339),
+		})
+	}
+
+	last, err := time.Parse(time.RFC3339, strings.TrimSpace(notice.LastNoticeAt))
+	if err != nil {
+		last = now
+	}
+	if now.Sub(last) < reminderInterval {
+		return nil
+	}
+
+	first, err := time.Parse(time.RFC3339, strings.TrimSpace(notice.FirstSeenAt))
+	if err != nil {
+		first = last
+	}
+	waiting := now.Sub(first).Round(time.Minute)
+	if dryRun {
+		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] phase %d gate reminder (%s waiting)", phase, waiting))
+	} else {
+		if err := w.appendEvent("phase_gate_reminder", "", map[string]any{"phase": phase, "waiting": waiting.String()}); err != nil {
+			w.log("WARN: appendEvent(phase_gate_reminder): %v", err)
+		}
+		_ = w.notifier.Alert(ctx, fmt.Sprintf("phase %d gate still waiting (%s) — run `agent-swarm go` to continue", phase, waiting))
+	}
+	notice.LastNoticeAt = now.Format(time.RFC3339)
+	return w.writePhaseGateNotice(*notice)
+}
+
+func (w *Watchdog) completionSignature() string {
+	if w == nil || w.tracker == nil {
+		return ""
+	}
+	ids := make([]string, 0, len(w.tracker.Tickets))
+	for id := range w.tracker.Tickets {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var b strings.Builder
+	for _, id := range ids {
+		tk := w.tracker.Tickets[id]
+		b.WriteString(id)
+		b.WriteString("|")
+		b.WriteString(tk.Status)
+		b.WriteString("|")
+		b.WriteString(tk.SHA)
+		b.WriteString("\n")
+	}
+	h := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(h[:])
+}
+
+func (w *Watchdog) completionMarkerPath() string {
+	if w == nil || w.config == nil || strings.TrimSpace(w.config.Project.Tracker) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(w.config.Project.Tracker), ".completion-notified")
+}
+
+func (w *Watchdog) wasCompletionNotified(signature string) bool {
+	if strings.TrimSpace(signature) == "" {
+		return false
+	}
+	p := w.completionMarkerPath()
+	if p == "" {
+		return false
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return false
+	}
+	raw := strings.TrimSpace(string(b))
+	if raw == "" {
+		return false
+	}
+	if strings.HasPrefix(raw, "{") {
+		var meta map[string]any
+		if json.Unmarshal([]byte(raw), &meta) == nil {
+			if s, ok := meta["signature"].(string); ok {
+				return s == signature
+			}
+		}
+	}
+	return raw == signature
+}
+
+func (w *Watchdog) markCompletionNotified(signature string) error {
+	if strings.TrimSpace(signature) == "" {
+		return nil
+	}
+	p := w.completionMarkerPath()
+	if p == "" {
+		return nil
+	}
+	meta := map[string]any{
+		"signature": signature,
+		"project":   w.tracker.Project,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, append(b, '\n'), 0o644)
 }
 
 func (w *Watchdog) buildCompletionReport() string {
@@ -526,32 +956,35 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		return fmt.Errorf("ticket %q not found", ticketID)
 	}
 
+	dec, _ := w.guardianCheck(ctx, guardian.EventBeforeSpawn, ticketID, tk)
+	if dec.Result == guardian.ResultBlock {
+		_ = w.appendEvent("guardian_block", ticketID, map[string]any{"event": "before_spawn", "rule": dec.RuleID, "reason": dec.Reason, "evidence": dec.EvidencePath})
+		return fmt.Errorf("guardian blocked spawn for %s: %s", ticketID, dec.Reason)
+	}
+	if w != nil && w.config != nil && w.config.Project.RequireExplicitRole && strings.TrimSpace(tk.Profile) == "" {
+		return fmt.Errorf("ticket %s missing explicit role/profile", ticketID)
+	}
+
 	branch := strings.TrimSpace(tk.Branch)
 	if branch == "" {
 		branch = "feat/" + ticketID
 	}
 
+	workDir := w.worktree.Path(ticketID)
 	if !w.worktree.Exists(ticketID) {
-		if _, err := w.worktree.Create(ticketID, branch); err != nil {
+		createdPath, err := w.worktree.Create(ticketID, branch)
+		if err != nil {
 			return err
 		}
+		if strings.TrimSpace(createdPath) != "" {
+			workDir = createdPath
+		}
 	}
-	workDir := w.worktree.Path(ticketID)
 
 	srcPrompt := filepath.Join(w.config.Project.PromptDir, ticketID+".md")
 	promptBody, err := os.ReadFile(srcPrompt)
 	if err != nil {
-		// Auto-generate prompt from ticket description + project spec
-		tk, _ := w.tracker.Get(ticketID)
-		desc := tk.Desc
-		if desc == "" {
-			desc = "Implement " + ticketID
-		}
-		promptBody = []byte(fmt.Sprintf("# %s\n\n## Objective\n%s\n", ticketID, desc))
-		w.log("WARN: no prompt file for %s — auto-generated from description + spec", ticketID)
-		// Also save it for future reference
-		_ = os.MkdirAll(filepath.Dir(srcPrompt), 0o755)
-		_ = os.WriteFile(srcPrompt, promptBody, 0o644)
+		return fmt.Errorf("missing prompt file for %s at %s", ticketID, srcPrompt)
 	}
 
 	// Assemble layered prompt: governance → spec → profile → ticket → footer
@@ -572,15 +1005,19 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would spawn %s", ticketID))
 		return nil
 	}
+	w.writeSpawnMarker(ticketID)
 
 	handle, err := spawnBackend.Spawn(ctx, backend.SpawnConfig{
 		TicketID:    ticketID,
 		Branch:      branch,
 		WorkDir:     workDir,
+		ProjectDir:  w.projectRoot(),
 		PromptFile:  promptPath,
 		Model:       model,
 		Effort:      w.config.Backend.Effort,
 		ProjectName: w.config.Project.Name,
+		SpawnFile:   w.ticketSpawnFile(ticketID),
+		ExitFile:    w.ticketExitFile(ticketID),
 	})
 	if err != nil {
 		return err
@@ -710,16 +1147,22 @@ func (w *Watchdog) sessionHandleForTicket(ticketID string, tk tracker.Ticket) ba
 	return h
 }
 
-// projectRoot returns the project root directory (parent of swarm/).
+// projectRoot returns the repository root directory.
 func (w *Watchdog) projectRoot() string {
 	if w == nil || w.config == nil {
 		return ""
+	}
+	repo := strings.TrimSpace(w.config.Project.Repo)
+	if repo != "" {
+		if abs, err := filepath.Abs(repo); err == nil {
+			return abs
+		}
+		return repo
 	}
 	trackerPath := strings.TrimSpace(w.config.Project.Tracker)
 	if trackerPath == "" {
 		return ""
 	}
-	// Tracker is at swarm/tracker.json — go up two levels
 	return filepath.Dir(filepath.Dir(trackerPath))
 }
 
@@ -772,7 +1215,7 @@ func (w *Watchdog) assemblePromptForTicket(ticketID string, tk tracker.Ticket, t
 
 	// Layer 5: footer
 	parts = append(parts, loadPromptFooter(w.config.Project.PromptDir))
-	if suffix := reviewOutputSuffix(profileName); len(suffix) > 0 {
+	if suffix := reviewOutputSuffix(profileName, ticketID, tk); len(suffix) > 0 {
 		parts = append(parts, suffix)
 	}
 
@@ -789,39 +1232,8 @@ func loadPromptFooter(promptDir string) []byte {
 	return []byte(defaultPromptFooter)
 }
 
-func (w *Watchdog) selectProfileName(ticketID string, tk tracker.Ticket) string {
-	if profile := strings.TrimSpace(tk.Profile); profile != "" {
-		return profile
-	}
-	if inferred := inferProfileFromTicketID(ticketID); inferred != "" {
-		return inferred
-	}
-	if w == nil || w.config == nil {
-		return ""
-	}
-	return strings.TrimSpace(w.config.Project.DefaultProfile)
-}
-
-func inferProfileFromTicketID(ticketID string) string {
-	id := strings.ToLower(strings.TrimSpace(ticketID))
-	switch {
-	case strings.HasPrefix(id, "arch-"), strings.HasPrefix(id, "arc-"):
-		return "architect"
-	case strings.HasPrefix(id, "gap-"), strings.HasPrefix(id, "review-"), strings.HasPrefix(id, "rev-"), strings.HasPrefix(id, "mem-"):
-		return "code-reviewer"
-	case strings.HasPrefix(id, "sec-"):
-		return "security-reviewer"
-	case strings.HasPrefix(id, "tst-"):
-		return "e2e-runner"
-	case strings.HasPrefix(id, "doc-"):
-		return "doc-updater"
-	case strings.HasPrefix(id, "clean-"), strings.HasPrefix(id, "cln-"):
-		return "refactor-cleaner"
-	case strings.HasPrefix(id, "fix-"):
-		return "code-agent"
-	default:
-		return ""
-	}
+func (w *Watchdog) selectProfileName(_ string, tk tracker.Ticket) string {
+	return strings.TrimSpace(tk.Profile)
 }
 
 func (w *Watchdog) resolveSpawnModel(ticketID string, tk tracker.Ticket) string {
@@ -951,13 +1363,23 @@ func isCodexCompatibleModel(model string) bool {
 	return strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3") || strings.HasPrefix(m, "o4")
 }
 
-func reviewOutputSuffix(profileName string) []byte {
+func reviewOutputSuffix(profileName, ticketID string, tk tracker.Ticket) []byte {
+	feature := strings.TrimSpace(tk.Feature)
+	if feature == "" {
+		if parsed, ok := parsePostBuildFeatureFromTicketID(ticketID); ok {
+			feature = parsed
+		}
+	}
+	if feature == "" {
+		feature = "<feature>"
+	}
+
 	path := ""
 	switch strings.TrimSpace(profileName) {
 	case "code-reviewer":
-		path = "swarm/features/<feature>/review-report.json"
+		path = filepath.ToSlash(filepath.Join("swarm", "features", feature, "review-report.json"))
 	case "security-reviewer":
-		path = "swarm/features/<feature>/sec-report.json"
+		path = filepath.ToSlash(filepath.Join("swarm", "features", feature, "sec-report.json"))
 	default:
 		return nil
 	}
@@ -989,6 +1411,22 @@ Verdict: BLOCK if any critical or high. WARN if only medium/low. PASS if clean.
 
 After writing the JSON, commit and push it.
 `, path))
+}
+
+func parsePostBuildFeatureFromTicketID(ticketID string) (string, bool) {
+	ticketID = strings.TrimSpace(ticketID)
+	if ticketID == "" {
+		return "", false
+	}
+	i := strings.Index(ticketID, "-")
+	if i <= 0 || i+1 >= len(ticketID) {
+		return "", false
+	}
+	feature := strings.TrimSpace(ticketID[i+1:])
+	if feature == "" {
+		return "", false
+	}
+	return feature, true
 }
 
 // joinParts concatenates byte slices with double-newline separators.
@@ -1185,9 +1623,89 @@ func buildFixPrompt(fixID, sourceTicket string, finding reviewFinding) string {
 	}
 	return b.String()
 }
+func (w *Watchdog) guardianCheck(ctx context.Context, ev guardian.Event, ticketID string, tk tracker.Ticket) (guardian.Decision, error) {
+	if w == nil || w.guardian == nil {
+		return guardian.Decision{Result: guardian.ResultAllow}, nil
+	}
+	dec, err := w.guardian.Evaluate(ctx, guardian.Request{
+		Event:    ev,
+		TicketID: ticketID,
+		Phase:    tk.Phase,
+		RunID:    strings.TrimSpace(tk.RunID),
+		Context: map[string]any{
+			"type":       tk.Type,
+			"feature":    tk.Feature,
+			"profile":    strings.TrimSpace(tk.Profile),
+			"verify_cmd": strings.TrimSpace(tk.VerifyCmd),
+		},
+	})
+	if err != nil {
+		return guardian.Decision{Result: guardian.ResultWarn, Reason: err.Error()}, nil
+	}
+	if dec.Result == "" {
+		dec.Result = guardian.ResultAllow
+	}
+	return dec, nil
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func (w *Watchdog) verifyTicket(ticketID string, tk tracker.Ticket) (bool, error) {
+	verifyCmd := strings.TrimSpace(tk.VerifyCmd)
+	if verifyCmd == "" && w != nil && w.config != nil {
+		verifyCmd = strings.TrimSpace(w.config.Integration.VerifyCmd)
+	}
+	if verifyCmd == "" {
+		if w != nil && w.config != nil && w.config.Project.RequireVerifyCmd {
+			return false, fmt.Errorf("missing verify_cmd for ticket %s", ticketID)
+		}
+		w.log("WARN: ticket %s has no verify_cmd and no integration.verify_cmd; allowing completion", ticketID)
+		return true, nil
+	}
+	wtPath := w.worktree.Path(ticketID)
+	cmd := exec.Command("bash", "-lc", verifyCmd)
+	cmd.Dir = wtPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if len(out) > 0 {
+			w.log("WARN: verify failed for %s: %s", ticketID, truncateText(string(out), 400))
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func truncateText(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return strings.TrimSpace(s)
+	}
+	return strings.TrimSpace(s[:max])
+}
+
 func (w *Watchdog) appendEvent(eventType, ticketID string, data map[string]any) error {
 	if w.events == nil || w.dryRun {
 		return nil
+	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	if w != nil && w.tracker != nil {
+		if tk, ok := w.tracker.Get(ticketID); ok {
+			if _, exists := data["phase"]; !exists {
+				data["phase"] = tk.Phase
+			}
+			if _, exists := data["run_id"]; !exists && strings.TrimSpace(tk.RunID) != "" {
+				data["run_id"] = strings.TrimSpace(tk.RunID)
+			}
+			if _, exists := data["role"]; !exists && strings.TrimSpace(tk.Profile) != "" {
+				data["role"] = strings.TrimSpace(tk.Profile)
+			}
+		}
 	}
 	return w.events.Append(Event{Type: eventType, Ticket: ticketID, Timestamp: time.Now().UTC(), Data: data})
 }
@@ -1363,56 +1881,83 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 		return nil
 	}
 
-	featureNames := make([]string, 0, len(features))
+	runStatus := &buildFeatureStatus{PostBuildStepsSet: map[string]bool{}}
+	buildIDSet := map[string]struct{}{}
+	buildFeatures := make([]string, 0, len(features))
+	allBuildDone := true
+
 	for feature, fs := range features {
-		if fs.BuildTotal == 0 || fs.BuildDone != fs.BuildTotal {
+		if fs == nil {
 			continue
 		}
-		missing := false
-		for _, step := range order {
-			if !fs.PostBuildStepsSet[step] {
-				missing = true
-				break
+		if fs.BuildTotal == 0 {
+			for step := range fs.PostBuildStepsSet {
+				runStatus.PostBuildStepsSet[step] = true
 			}
+			continue
 		}
-		if missing {
-			featureNames = append(featureNames, feature)
+		buildFeatures = append(buildFeatures, feature)
+		runStatus.BuildTotal += fs.BuildTotal
+		runStatus.BuildDone += fs.BuildDone
+		if fs.MaxBuildPhase > runStatus.MaxBuildPhase {
+			runStatus.MaxBuildPhase = fs.MaxBuildPhase
+		}
+		if fs.BuildDone != fs.BuildTotal {
+			allBuildDone = false
+		}
+		for _, id := range fs.BuildIDs {
+			if _, ok := buildIDSet[id]; ok {
+				continue
+			}
+			buildIDSet[id] = struct{}{}
+			runStatus.BuildIDs = append(runStatus.BuildIDs, id)
+		}
+		for step := range fs.PostBuildStepsSet {
+			runStatus.PostBuildStepsSet[step] = true
 		}
 	}
-	if len(featureNames) == 0 {
+
+	if runStatus.BuildTotal == 0 || !allBuildDone {
 		return nil
 	}
-	sort.Strings(featureNames)
+	sort.Strings(runStatus.BuildIDs)
+	sort.Strings(buildFeatures)
+
+	missing := false
+	for _, step := range order {
+		if !runStatus.PostBuildStepsSet[step] {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return nil
+	}
+
+	runFeature := "run"
+	if len(buildFeatures) == 1 {
+		runFeature = buildFeatures[0]
+	}
 
 	if w.dryRun {
-		for _, feature := range featureNames {
-			_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would create post-build tickets for feature %s", feature))
-		}
+		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would create post-build tickets once for run scope %s", runFeature))
 		return nil
 	}
 
-	changed := false
-	for _, feature := range featureNames {
-		fs := features[feature]
-		created := w.createPostBuildTicketsForFeature(feature, fs, order, parallelGroups)
-		if created == 0 {
-			continue
-		}
-		changed = true
-		msg := fmt.Sprintf("feature %s build complete — created %d post-build tickets", feature, created)
-		_ = w.notifier.Info(ctx, msg)
-		if err := w.appendEvent("post_build_generated", "", map[string]any{
-			"feature": feature,
-			"created": created,
-		}); err != nil {
-			w.log("WARN: appendEvent(post_build_generated, %s): %v", feature, err)
-		}
+	created := w.createPostBuildTicketsForFeature(runFeature, runStatus, order, parallelGroups)
+	if created == 0 {
+		return nil
 	}
-
-	if changed {
-		return w.saveTracker()
+	msg := fmt.Sprintf("run build complete — created %d post-build tickets (scope=%s)", created, runFeature)
+	_ = w.notifier.Info(ctx, msg)
+	if err := w.appendEvent("post_build_generated", "", map[string]any{
+		"scope":   "run",
+		"feature": runFeature,
+		"created": created,
+	}); err != nil {
+		w.log("WARN: appendEvent(post_build_generated, %s): %v", runFeature, err)
 	}
-	return nil
+	return w.saveTracker()
 }
 
 func (w *Watchdog) postBuildPlan() ([]string, [][]string, bool) {
@@ -1577,6 +2122,17 @@ func (w *Watchdog) createPostBuildTicketsForFeature(
 	prevStageIDs := append([]string(nil), fs.BuildIDs...)
 	sort.Strings(prevStageIDs)
 
+	verifyCmd := ""
+	profileMap := lifecycle.DefaultProfileMap()
+	if w != nil && w.config != nil {
+		verifyCmd = strings.TrimSpace(w.config.Integration.VerifyCmd)
+		if m, err := lifecycle.LoadProfileMap(w.config.Lifecycle.PolicyFile); err == nil {
+			profileMap = m
+		} else {
+			w.log("WARN: lifecycle policy load failed (%s): %v", w.config.Lifecycle.PolicyFile, err)
+		}
+	}
+
 	for _, stage := range stages {
 		nextStageIDs := make([]string, 0, len(stage))
 		for _, step := range stage {
@@ -1587,19 +2143,27 @@ func (w *Watchdog) createPostBuildTicketsForFeature(
 				continue
 			}
 			tk := tracker.Ticket{
-				Status:  tracker.StatusTodo,
-				Phase:   phase,
-				Depends: append([]string(nil), prevStageIDs...),
-				Type:    step,
-				Feature: feature,
-				Branch:  "feat/" + id,
-				Desc:    postBuildDescription(step, feature),
-				Profile: postBuildProfile(step),
+				Status:    tracker.StatusTodo,
+				Phase:     phase,
+				Depends:   append([]string(nil), prevStageIDs...),
+				Type:      step,
+				Feature:   feature,
+				Branch:    "feat/" + id,
+				Desc:      postBuildDescription(step, feature),
+				Profile:   lifecycle.ProfileForTicketType(profileMap, step),
+				VerifyCmd: verifyCmd,
 			}
 			if len(tk.Depends) == 0 {
 				tk.Depends = []string{}
 			}
 			w.tracker.Tickets[id] = tk
+			promptDir := w.resolvePromptDir()
+			if err := os.MkdirAll(promptDir, 0o755); err == nil {
+				promptPath := filepath.Join(promptDir, id+".md")
+				if _, statErr := os.Stat(promptPath); os.IsNotExist(statErr) {
+					_ = os.WriteFile(promptPath, []byte(buildPostBuildPrompt(id, step, feature, tk.Depends, verifyCmd)), 0o644)
+				}
+			}
 			fs.PostBuildStepsSet[step] = true
 			created++
 		}
@@ -1714,20 +2278,248 @@ func buildPostBuildStages(order []string, parallelGroups [][]string) [][]string 
 	return stages
 }
 
-func postBuildProfile(step string) string {
+func buildPostBuildPrompt(ticketID, step, feature string, depends []string, verifyCmd string) string {
+	depText := "none"
+	if len(depends) > 0 {
+		depText = strings.Join(depends, ", ")
+	}
+	verifyText := "Follow the project verify command and include evidence in commit message."
+	if strings.TrimSpace(verifyCmd) != "" {
+		verifyText = verifyCmd
+	}
+
+	reviewReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "review-report.json"))
+	secReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "sec-report.json"))
+	gapReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "gap-report.md"))
+	testReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "test-report.md"))
+	docReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "doc-report.md"))
+	cleanReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "clean-report.md"))
+	memReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "mem-report.md"))
+
 	switch strings.TrimSpace(step) {
-	case "gap", "review", "mem":
-		return "code-reviewer"
+	case "int":
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run post-build integration for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Merge and stabilize feature %s outputs into one coherent baseline
+- Resolve only integration conflicts/regressions tied to this feature
+- Do not introduce unrelated features
+
+## Verify
+%s
+`, ticketID, feature, depText, feature, verifyText)
+	case "gap":
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run post-build gap analysis for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Assess what is still missing vs intended feature scope
+- Identify correctness, UX, ops, and rollout gaps
+- Produce actionable follow-ups (ticketable, concrete)
+
+## Required deliverable
+Always produce and commit:
+- %s
+
+Report must include:
+- confirmed complete items
+- identified gaps (severity + rationale)
+- recommended follow-up tickets
+
+## Verify
+%s
+`, ticketID, feature, depText, gapReportPath, verifyText)
 	case "tst":
-		return "e2e-runner"
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run post-build test and verification sweep for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Execute focused verification for feature %s
+- Capture failures, flakes, and confidence level
+- Do not modify unrelated features
+
+## Required deliverable
+Always produce and commit:
+- %s
+
+Report must include:
+- commands run
+- pass/fail summary
+- failing areas with likely root cause
+
+## Verify
+%s
+`, ticketID, feature, depText, feature, testReportPath, verifyText)
+	case "review":
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run post-build code review for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Review merged feature changes for correctness and maintainability
+- READ-ONLY review; do not modify source files
+- Produce a structured findings report at %s
+
+## Inputs
+- %s
+- %s
+
+## Verify
+%s
+`, ticketID, feature, depText, reviewReportPath, gapReportPath, testReportPath, verifyText)
 	case "sec":
-		return "security-reviewer"
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run post-build security review for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Assess security posture of merged feature changes
+- READ-ONLY review; do not modify source files
+- Produce a structured findings report at %s
+
+## Inputs
+- %s
+- %s
+
+## Verify
+%s
+`, ticketID, feature, depText, secReportPath, gapReportPath, testReportPath, verifyText)
 	case "doc":
-		return "doc-updater"
+		return fmt.Sprintf(`# %s
+
+## Objective
+Update all relevant project documentation for feature %q so user + functional + technical docs remain current.
+
+## Dependencies
+%s
+
+## Scope
+- Update user-facing docs (`+"`docs/user-guide.md`"+`) where behavior changed
+- Update technical docs (`+"`docs/technical.md`"+`) with architecture/flow changes
+- Update release notes (`+"`docs/release-notes.md`"+`) for shipped impact
+- If no doc updates are required, provide explicit no-op justification
+
+## Inputs
+- %s
+- %s
+- %s
+
+## Required deliverable
+Always produce and commit:
+- %s
+
+Report must include:
+- docs changed and why
+- scope/intent coverage check
+- deferred doc follow-ups (if any)
+
+## Verify
+%s
+`, ticketID, feature, depText, reviewReportPath, secReportPath, gapReportPath, docReportPath, verifyText)
 	case "clean":
-		return "refactor-cleaner"
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run safe cleanup pass for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Apply only SAFE cleanup implied by review/security/test outputs
+- No behavior changes, no architecture drift
+- If no safe cleanup exists, produce explicit no-op report
+
+## Inputs
+- %s
+- %s
+- %s
+
+## Required deliverable
+Always produce and commit:
+- %s
+
+Report must include:
+- files touched + rationale (or explicit no-op)
+- risk assessment
+- any deferred cleanup
+
+## Verify
+%s
+`, ticketID, feature, depText, reviewReportPath, secReportPath, testReportPath, cleanReportPath, verifyText)
+	case "mem":
+		return fmt.Sprintf(`# %s
+
+## Objective
+Capture feature memory for %q: key decisions, choices, and lessons learned.
+
+## Dependencies
+%s
+
+## Scope
+- Consolidate decisions and trade-offs from integration/review/security/doc/cleanup outputs
+- Update project memory document (`+"`docs/lessons-learned.md`"+`) with feature-specific learnings
+- Keep entries concrete and reusable for future tickets
+
+## Inputs
+- %s
+- %s
+- %s
+- %s
+
+## Required deliverable
+Always produce and commit:
+- %s
+
+Report must include:
+- decisions taken (and why)
+- notable choices/trade-offs
+- lessons learned + recommended defaults
+
+## Verify
+%s
+`, ticketID, feature, depText, reviewReportPath, secReportPath, docReportPath, cleanReportPath, memReportPath, verifyText)
 	default:
-		return ""
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run post-build step %q for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Execute the %s workflow for feature %s
+- Produce concrete outputs and commit them
+- Do not modify unrelated features
+
+## Verify
+%s
+`, ticketID, step, feature, depText, step, feature, verifyText)
 	}
 }
 

@@ -135,6 +135,7 @@ agent-swarm integrate --continue   # resume after conflict fix
 | `agent-swarm serve [--port 8090]` | HTTP API + SSE server |
 | `agent-swarm integrate [--base main]` | Merge branches in dep order |
 | `agent-swarm install [--uninstall]` | Install system service |
+| `agent-swarm notify reset-completion` | Reset ALL_DONE notification marker |
 | `agent-swarm archive` | Archive done tickets |
 | `agent-swarm archive restore` | Restore archived tickets |
 | `agent-swarm archive list` | List archived tickets |
@@ -152,6 +153,7 @@ min_ram_mb = 1024
 auto_approve = false       # toggle at runtime with 'm' in TUI
 prompt_dir = "swarm/prompts"
 tracker = "swarm/tracker.json"
+features_dir = "swarm/features"
 
 [backend]
 type = "codex-tmux"        # codex-tmux | claude-code (future)
@@ -201,3 +203,21 @@ When used as an OpenClaw skill, the agent can:
 6. Run `agent-swarm integrate` when all tickets complete
 
 The HTTP API (`agent-swarm serve`) enables Mission Control / web dashboard integration via SSE events.
+
+
+## OpenClaw multi-project mode (recommended)
+
+For OpenClaw, run swarm in `watch --once` mode per project via a central timer/service. This is safer than one long-running process per repo and avoids orphan loops.
+
+Checklist:
+- iterate projects registry
+- resolve `<repo>/swarm.toml`
+- dedupe identical config paths
+- execute `agent-swarm --config <path> watch --once`
+- rely on completion marker dedupe for one-time ALL_DONE alerts
+
+If you need to re-send completion after a major change:
+
+```bash
+agent-swarm --config <path> notify reset-completion
+```

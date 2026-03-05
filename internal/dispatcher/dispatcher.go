@@ -140,7 +140,9 @@ func (d *Dispatcher) ApprovePhaseGate() (Signal, []string) {
 			d.mu.Unlock()
 			if d.tracker != nil {
 				d.tracker.UnlockedPhase = p
-				if saveErr := d.tracker.Save(); saveErr != nil { fmt.Fprintf(os.Stderr, "SAVE ERROR: %v\n", saveErr) }
+				if saveErr := d.tracker.Save(); saveErr != nil {
+					fmt.Fprintf(os.Stderr, "SAVE ERROR: %v\n", saveErr)
+				}
 			}
 			break
 		}
@@ -152,6 +154,12 @@ func (d *Dispatcher) ApprovePhaseGate() (Signal, []string) {
 func (d *Dispatcher) SetUnlockedPhase(phase int) {
 	d.mu.Lock()
 	d.unlockedPhase = phase
+	d.mu.Unlock()
+}
+
+func (d *Dispatcher) SetTracker(t *tracker.Tracker) {
+	d.mu.Lock()
+	d.tracker = t
 	d.mu.Unlock()
 }
 
@@ -234,6 +242,14 @@ func (d *Dispatcher) spawnableInPhase(phase int) []string {
 		if tk.Status != tracker.StatusTodo {
 			continue
 		}
+		if d != nil && d.config != nil {
+			if d.config.Project.RequireExplicitRole && strings.TrimSpace(tk.Profile) == "" {
+				continue
+			}
+			if d.config.Project.RequireVerifyCmd && strings.TrimSpace(tk.VerifyCmd) == "" && strings.TrimSpace(d.config.Integration.VerifyCmd) == "" {
+				continue
+			}
+		}
 		ready := true
 		for _, dep := range tk.Depends {
 			dt, ok := d.tracker.Get(dep)
@@ -246,11 +262,16 @@ func (d *Dispatcher) spawnableInPhase(phase int) []string {
 			ids = append(ids, id)
 		}
 	}
-	sort.Strings(ids)
+	sort.Slice(ids, func(i, j int) bool {
+		pi := tickets[ids[i]].Priority
+		pj := tickets[ids[j]].Priority
+		if pi == pj {
+			return ids[i] < ids[j]
+		}
+		return pi > pj
+	})
 	return ids
 }
-
-
 
 func hasMinRAM(minMB int) bool {
 	if minMB <= 0 {

@@ -288,3 +288,31 @@ func TestSaveToOmitsEmptyExtendedTicketSchemaFields(t *testing.T) {
 		t.Fatalf("expected profile to be omitted, got %v", t1["profile"])
 	}
 }
+
+func TestSaveToConcurrentWritersPreservesValidJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tracker.json")
+
+	tr1 := &Tracker{Project: "x", Tickets: map[string]Ticket{"a": {Status: "todo", Phase: 1}}}
+	tr2 := &Tracker{Project: "x", Tickets: map[string]Ticket{"b": {Status: "todo", Phase: 1}}}
+
+	done := make(chan error, 2)
+	go func() { done <- tr1.SaveTo(path) }()
+	go func() { done <- tr2.SaveTo(path) }()
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent save failed: %v", err)
+		}
+	}
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var loaded Tracker
+	if err := json.Unmarshal(b, &loaded); err != nil {
+		t.Fatalf("invalid json after concurrent writes: %v", err)
+	}
+	if loaded.Project != "x" {
+		t.Fatalf("project mismatch: %q", loaded.Project)
+	}
+}
