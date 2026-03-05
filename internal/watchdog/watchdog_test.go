@@ -291,7 +291,8 @@ func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 			Tracker:    trackerPath,
 			MaxAgents:  1,
 		},
-		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+		Backend:     config.BackendConfig{Model: "m", Effort: "e"},
+		Integration: config.IntegrationConfig{VerifyCmd: "go test ./..."},
 		PostBuild: config.PostBuildConfig{
 			Order: []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
 			ParallelGroups: [][]string{
@@ -346,6 +347,9 @@ func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 		}
 		if tk.Profile != tc.profile {
 			t.Fatalf("%s profile = %q, want %q", tc.id, tk.Profile, tc.profile)
+		}
+		if tk.VerifyCmd != "go test ./..." {
+			t.Fatalf("%s verify_cmd = %q, want %q", tc.id, tk.VerifyCmd, "go test ./...")
 		}
 		assertSameDeps(t, tc.id, tk.Depends, tc.depends)
 	}
