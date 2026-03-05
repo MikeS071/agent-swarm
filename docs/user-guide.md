@@ -180,12 +180,31 @@ Archive storage path: `swarm/archive.json`.
 swarm serve --port 8090
 ```
 
+If you set `--auth-token` (or `serve.auth_token` in `swarm.toml`), every API request must send `Authorization: Bearer <token>`.
+
+Run one watchdog pass over HTTP:
+
+```bash
+curl -X POST http://127.0.0.1:8090/api/watchdog/run
+
+# with auth enabled
+curl -X POST http://127.0.0.1:8090/api/watchdog/run \
+  -H "Authorization: Bearer <token>"
+```
+
+`POST /api/watchdog/run` returns `202 Accepted` with `{"ok": true}` when the pass is triggered.
+
 Common endpoints:
 - `GET /api/projects`
 - `GET /api/projects/{name}/status`
 - `GET /api/projects/{name}/tickets`
+- `GET /api/projects/{name}/stats`
 - `GET /api/projects/{name}/phase-gate`
 - `POST /api/projects/{name}/phase-gate/approve`
+- `GET /api/watchdog/status`
+- `GET /api/watchdog/log`
+- `POST /api/watchdog/run`
+- `GET /api/health`
 - `GET /api/events` (SSE)
 
 ### 11. Install scheduler

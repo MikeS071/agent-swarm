@@ -27,6 +27,12 @@ CLI (cmd/*)
 5. Spawnable tickets are launched up to capacity constraints.
 6. Tracker and `events.jsonl` are updated.
 
+## Run Execution Paths
+
+- `swarm watch` calls `watchdog.Run(ctx)` for continuous interval-based execution.
+- `swarm watch --once` calls `watchdog.RunOnce(ctx)` and exits after a single pass.
+- `POST /api/watchdog/run` calls the same `RunOnce(ctx)` path through `internal/server`.
+
 ## v2 Prompt Assembly
 
 At spawn time, each ticket prompt is assembled by `watchdog.assemblePrompt`:
@@ -121,6 +127,11 @@ Main operations:
 
 Provides HTTP API and SSE streams.
 
+Middleware order:
+- request logging
+- bearer auth (enabled when `serve.auth_token` is set)
+- CORS policy from `serve.cors`
+
 Routes:
 - `GET /api/projects`
 - `GET /api/projects/{name}/status`
@@ -139,6 +150,12 @@ Routes:
 - `POST /api/watchdog/run`
 - `GET /api/health`
 - `GET /api/events` (SSE event bus)
+
+Run-control API behavior:
+- `POST /api/watchdog/run` -> `202` with `{"ok": true}` on success.
+- `POST /api/watchdog/run` -> `503` if no watchdog is configured.
+- `POST /api/watchdog/run` -> `500` when `RunOnce` returns an error.
+- Any route -> `401` when bearer auth is enabled and token is missing/invalid.
 
 SSE event bus constants:
 - `ticket_done`, `ticket_spawned`, `progress`, `phase_gate`, `failure`, `ram_warning`
