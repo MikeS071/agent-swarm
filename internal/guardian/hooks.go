@@ -20,18 +20,19 @@ const (
 )
 
 type Request struct {
-	Event    Event
-	TicketID string
-	RunID    string
-	Phase    int
-	Context  map[string]any
+	Event    Event          `json:"event"`
+	TicketID string         `json:"ticket_id,omitempty"`
+	RunID    string         `json:"run_id,omitempty"`
+	Phase    int            `json:"phase,omitempty"`
+	Context  map[string]any `json:"context,omitempty"`
 }
 
 type Decision struct {
-	Result       Result
-	RuleID       string
-	Reason       string
-	EvidencePath string
+	Result       Result `json:"result"`
+	RuleID       string `json:"rule,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Target       string `json:"target,omitempty"`
+	EvidencePath string `json:"evidence,omitempty"`
 }
 
 type Evaluator interface {
