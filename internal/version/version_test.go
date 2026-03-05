@@ -40,8 +40,24 @@ func TestStringDevBuild(t *testing.T) {
 	defer func() { ver = old }()
 
 	s := String()
-	// Should be either "vdev" or "v<module-version>"
 	if s == "" {
 		t.Fatal("String() returned empty")
+	}
+}
+
+func TestNormalizePseudoVersionToCanonical(t *testing.T) {
+	in := "v0.0.0-20260305082248-0167d23c1333+dirty"
+	got := normalize(in)
+	want := "2026.03.05-82248"
+	if got != want {
+		t.Fatalf("normalize(%q)=%q want %q", in, got, want)
+	}
+}
+
+func TestNormalizeCanonicalStaysCanonical(t *testing.T) {
+	in := "v2026.03.05-9"
+	got := normalize(in)
+	if got != "2026.03.05-9" {
+		t.Fatalf("normalize canonical got %q", got)
 	}
 }
