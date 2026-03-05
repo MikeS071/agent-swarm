@@ -390,7 +390,7 @@ func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 		{id: "sec-cch", status: tracker.StatusTodo, depends: []string{"gap-cch", "tst-cch"}, profile: "security-reviewer", ticketTy: "sec"},
 		{id: "doc-cch", status: tracker.StatusTodo, depends: []string{"review-cch", "sec-cch"}, profile: "doc-updater", ticketTy: "doc"},
 		{id: "clean-cch", status: tracker.StatusTodo, depends: []string{"review-cch", "sec-cch"}, profile: "refactor-cleaner", ticketTy: "clean"},
-		{id: "mem-cch", status: tracker.StatusTodo, depends: []string{"clean-cch", "doc-cch"}, profile: "code-reviewer", ticketTy: "mem"},
+		{id: "mem-cch", status: tracker.StatusTodo, depends: []string{"clean-cch", "doc-cch"}, profile: "doc-updater", ticketTy: "mem"},
 	}
 
 	for _, tc := range tests {
@@ -428,6 +428,28 @@ func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 	}
 	if !strings.Contains(string(reviewPrompt), "go test ./...") {
 		t.Fatalf("review prompt missing verify command:\n%s", string(reviewPrompt))
+	}
+
+	docPrompt, err := os.ReadFile(filepath.Join(promptDir, "doc-cch.md"))
+	if err != nil {
+		t.Fatalf("read doc prompt: %v", err)
+	}
+	if !strings.Contains(string(docPrompt), "docs/user-guide.md") || !strings.Contains(string(docPrompt), "docs/technical.md") {
+		t.Fatalf("doc prompt missing required docs targets:\n%s", string(docPrompt))
+	}
+	if !strings.Contains(string(docPrompt), "swarm/features/cch/doc-report.md") {
+		t.Fatalf("doc prompt missing doc-report deliverable:\n%s", string(docPrompt))
+	}
+
+	memPrompt, err := os.ReadFile(filepath.Join(promptDir, "mem-cch.md"))
+	if err != nil {
+		t.Fatalf("read mem prompt: %v", err)
+	}
+	if !strings.Contains(string(memPrompt), "docs/lessons-learned.md") {
+		t.Fatalf("mem prompt missing lessons-learned target:\n%s", string(memPrompt))
+	}
+	if !strings.Contains(string(memPrompt), "swarm/features/cch/mem-report.md") {
+		t.Fatalf("mem prompt missing mem-report deliverable:\n%s", string(memPrompt))
 	}
 
 	if len(be.spawnCalls) != 1 || be.spawnCalls[0].TicketID != "int-cch" {

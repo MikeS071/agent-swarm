@@ -1994,12 +1994,12 @@ func (w *Watchdog) createPostBuildTicketsForFeature(
 				continue
 			}
 			tk := tracker.Ticket{
-				Status:  tracker.StatusTodo,
-				Phase:   phase,
-				Depends: append([]string(nil), prevStageIDs...),
-				Type:    step,
-				Feature: feature,
-				Branch:  "feat/" + id,
+				Status:    tracker.StatusTodo,
+				Phase:     phase,
+				Depends:   append([]string(nil), prevStageIDs...),
+				Type:      step,
+				Feature:   feature,
+				Branch:    "feat/" + id,
 				Desc:      postBuildDescription(step, feature),
 				Profile:   postBuildProfile(step),
 				VerifyCmd: verifyCmd,
@@ -2139,43 +2139,221 @@ func buildPostBuildPrompt(ticketID, step, feature string, depends []string, veri
 		verifyText = verifyCmd
 	}
 
+	reviewReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "review-report.json"))
+	secReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "sec-report.json"))
+	gapReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "gap-report.md"))
+	testReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "test-report.md"))
+	docReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "doc-report.md"))
+	cleanReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "clean-report.md"))
+	memReportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "mem-report.md"))
+
 	switch strings.TrimSpace(step) {
+	case "int":
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run post-build integration for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Merge and stabilize feature %s outputs into one coherent baseline
+- Resolve only integration conflicts/regressions tied to this feature
+- Do not introduce unrelated features
+
+## Verify
+%s
+`, ticketID, feature, depText, feature, verifyText)
+	case "gap":
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run post-build gap analysis for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Assess what is still missing vs intended feature scope
+- Identify correctness, UX, ops, and rollout gaps
+- Produce actionable follow-ups (ticketable, concrete)
+
+## Required deliverable
+Always produce and commit:
+- %s
+
+Report must include:
+- confirmed complete items
+- identified gaps (severity + rationale)
+- recommended follow-up tickets
+
+## Verify
+%s
+`, ticketID, feature, depText, gapReportPath, verifyText)
+	case "tst":
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run post-build test and verification sweep for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Execute focused verification for feature %s
+- Capture failures, flakes, and confidence level
+- Do not modify unrelated features
+
+## Required deliverable
+Always produce and commit:
+- %s
+
+Report must include:
+- commands run
+- pass/fail summary
+- failing areas with likely root cause
+
+## Verify
+%s
+`, ticketID, feature, depText, feature, testReportPath, verifyText)
 	case "review":
-		reportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "review-report.json"))
 		return fmt.Sprintf(`# %s
 
 ## Objective
-Run post-build step %q for feature %q.
+Run post-build code review for feature %q.
 
 ## Dependencies
 %s
 
 ## Scope
-- Review merged TP changes for feature %s
+- Review merged feature changes for correctness and maintainability
 - READ-ONLY review; do not modify source files
 - Produce a structured findings report at %s
 
+## Inputs
+- %s
+- %s
+
 ## Verify
 %s
-`, ticketID, step, feature, depText, feature, reportPath, verifyText)
+`, ticketID, feature, depText, reviewReportPath, gapReportPath, testReportPath, verifyText)
 	case "sec":
-		reportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "sec-report.json"))
 		return fmt.Sprintf(`# %s
 
 ## Objective
-Run post-build step %q for feature %q.
+Run post-build security review for feature %q.
 
 ## Dependencies
 %s
 
 ## Scope
-- Perform security review of merged TP changes for feature %s
+- Assess security posture of merged feature changes
 - READ-ONLY review; do not modify source files
 - Produce a structured findings report at %s
 
+## Inputs
+- %s
+- %s
+
 ## Verify
 %s
-`, ticketID, step, feature, depText, feature, reportPath, verifyText)
+`, ticketID, feature, depText, secReportPath, gapReportPath, testReportPath, verifyText)
+	case "doc":
+		return fmt.Sprintf(`# %s
+
+## Objective
+Update all relevant project documentation for feature %q so user + functional + technical docs remain current.
+
+## Dependencies
+%s
+
+## Scope
+- Update user-facing docs (`+"`docs/user-guide.md`"+`) where behavior changed
+- Update technical docs (`+"`docs/technical.md`"+`) with architecture/flow changes
+- Update release notes (`+"`docs/release-notes.md`"+`) for shipped impact
+- If no doc updates are required, provide explicit no-op justification
+
+## Inputs
+- %s
+- %s
+- %s
+
+## Required deliverable
+Always produce and commit:
+- %s
+
+Report must include:
+- docs changed and why
+- scope/intent coverage check
+- deferred doc follow-ups (if any)
+
+## Verify
+%s
+`, ticketID, feature, depText, reviewReportPath, secReportPath, gapReportPath, docReportPath, verifyText)
+	case "clean":
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run safe cleanup pass for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Apply only SAFE cleanup implied by review/security/test outputs
+- No behavior changes, no architecture drift
+- If no safe cleanup exists, produce explicit no-op report
+
+## Inputs
+- %s
+- %s
+- %s
+
+## Required deliverable
+Always produce and commit:
+- %s
+
+Report must include:
+- files touched + rationale (or explicit no-op)
+- risk assessment
+- any deferred cleanup
+
+## Verify
+%s
+`, ticketID, feature, depText, reviewReportPath, secReportPath, testReportPath, cleanReportPath, verifyText)
+	case "mem":
+		return fmt.Sprintf(`# %s
+
+## Objective
+Capture feature memory for %q: key decisions, choices, and lessons learned.
+
+## Dependencies
+%s
+
+## Scope
+- Consolidate decisions and trade-offs from integration/review/security/doc/cleanup outputs
+- Update project memory document (`+"`docs/lessons-learned.md`"+`) with feature-specific learnings
+- Keep entries concrete and reusable for future tickets
+
+## Inputs
+- %s
+- %s
+- %s
+- %s
+
+## Required deliverable
+Always produce and commit:
+- %s
+
+Report must include:
+- decisions taken (and why)
+- notable choices/trade-offs
+- lessons learned + recommended defaults
+
+## Verify
+%s
+`, ticketID, feature, depText, reviewReportPath, secReportPath, docReportPath, cleanReportPath, memReportPath, verifyText)
 	default:
 		return fmt.Sprintf(`# %s
 
@@ -2198,13 +2376,13 @@ Run post-build step %q for feature %q.
 
 func postBuildProfile(step string) string {
 	switch strings.TrimSpace(step) {
-	case "gap", "review", "mem":
+	case "gap", "review":
 		return "code-reviewer"
 	case "tst":
 		return "e2e-runner"
 	case "sec":
 		return "security-reviewer"
-	case "doc":
+	case "doc", "mem":
 		return "doc-updater"
 	case "clean":
 		return "refactor-cleaner"
