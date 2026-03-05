@@ -1945,6 +1945,11 @@ func (w *Watchdog) createPostBuildTicketsForFeature(
 	prevStageIDs := append([]string(nil), fs.BuildIDs...)
 	sort.Strings(prevStageIDs)
 
+	verifyCmd := ""
+	if w != nil && w.config != nil {
+		verifyCmd = strings.TrimSpace(w.config.Integration.VerifyCmd)
+	}
+
 	for _, stage := range stages {
 		nextStageIDs := make([]string, 0, len(stage))
 		for _, step := range stage {
@@ -1961,8 +1966,9 @@ func (w *Watchdog) createPostBuildTicketsForFeature(
 				Type:    step,
 				Feature: feature,
 				Branch:  "feat/" + id,
-				Desc:    postBuildDescription(step, feature),
-				Profile: postBuildProfile(step),
+				Desc:      postBuildDescription(step, feature),
+				Profile:   postBuildProfile(step),
+				VerifyCmd: verifyCmd,
 			}
 			if len(tk.Depends) == 0 {
 				tk.Depends = []string{}
