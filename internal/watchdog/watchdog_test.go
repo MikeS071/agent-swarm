@@ -14,6 +14,7 @@ import (
 	"github.com/MikeS071/agent-swarm/internal/backend"
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
+	"github.com/MikeS071/agent-swarm/internal/guardian"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
 	"github.com/MikeS071/agent-swarm/internal/worktree"
 )
@@ -67,6 +68,19 @@ type fakeNotifier struct {
 	infos  []string
 }
 
+type fakeGuardian struct {
+	decision guardian.Decision
+	events   []guardian.Event
+}
+
+func (f *fakeGuardian) Evaluate(_ context.Context, req guardian.Request) (guardian.Decision, error) {
+	f.events = append(f.events, req.Event)
+	if f.decision.Result == "" {
+		return guardian.Decision{Result: guardian.ResultAllow}, nil
+	}
+	return f.decision, nil
+}
+
 func (f *fakeNotifier) Alert(_ context.Context, msg string) error {
 	f.alerts = append(f.alerts, msg)
 	return nil
@@ -75,6 +89,106 @@ func (f *fakeNotifier) Alert(_ context.Context, msg string) error {
 func (f *fakeNotifier) Info(_ context.Context, msg string) error {
 	f.infos = append(f.infos, msg)
 	return nil
+}
+
+func TestGuardianSpawnBlockPreventsSpawn(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	writeFile(t, filepath.Join(promptDir, "g3-01.md"), "# g3-01\n")
+
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"g3-01": {
+			Status:    tracker.StatusTodo,
+			Phase:     1,
+			Branch:    "feat/g3-01",
+			Desc:      "Guardian spawn enforcement",
+			Profile:   "code-agent",
+			VerifyCmd: "go test ./...",
+		},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	w := New(cfg, tr, dispatcher.New(cfg, tr), be, wtMgr, n)
+	g := &fakeGuardian{decision: guardian.Decision{Result: guardian.ResultBlock, RuleID: "guardian_spawn_gate", Reason: "policy missing"}}
+	w.SetGuardian(g)
+
+	err := w.SpawnTicket(context.Background(), "g3-01")
+	if err == nil || !strings.Contains(err.Error(), "guardian blocked spawn") {
+		t.Fatalf("expected guardian blocked spawn error, got: %v", err)
+	}
+	if len(be.spawnCalls) != 0 {
+		t.Fatalf("expected no backend spawn calls, got %d", len(be.spawnCalls))
+	}
+	if wtMgr.Exists("g3-01") {
+		t.Fatalf("worktree should not be created when guardian blocks spawn")
+	}
+	if len(g.events) == 0 || g.events[0] != guardian.EventBeforeSpawn {
+		t.Fatalf("expected guardian before_spawn evaluation, got %+v", g.events)
+	}
+}
+
+func TestGuardianSpawnAllowSpawns(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	writeFile(t, filepath.Join(promptDir, "g3-01.md"), "# g3-01\n")
+
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"g3-01": {
+			Status:    tracker.StatusTodo,
+			Phase:     1,
+			Branch:    "feat/g3-01",
+			Desc:      "Guardian spawn enforcement",
+			Profile:   "code-agent",
+			VerifyCmd: "go test ./...",
+		},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	w := New(cfg, tr, dispatcher.New(cfg, tr), be, wtMgr, n)
+	g := &fakeGuardian{decision: guardian.Decision{Result: guardian.ResultAllow}}
+	w.SetGuardian(g)
+
+	if err := w.SpawnTicket(context.Background(), "g3-01"); err != nil {
+		t.Fatalf("spawn ticket: %v", err)
+	}
+	if len(be.spawnCalls) != 1 || be.spawnCalls[0].TicketID != "g3-01" {
+		t.Fatalf("expected one spawn call for g3-01, got %#v", be.spawnCalls)
+	}
+	if len(g.events) == 0 || g.events[0] != guardian.EventBeforeSpawn {
+		t.Fatalf("expected guardian before_spawn evaluation, got %+v", g.events)
+	}
 }
 
 func TestRunOnceMarksDoneAndChainsSpawn(t *testing.T) {
