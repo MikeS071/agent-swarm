@@ -1,0 +1,9 @@
+role: backend
+profile: backend.md
+rules:
+  - base.md
+  - backend.md
+skills:
+  - backend-patterns
+  - api-design
+  - security-review

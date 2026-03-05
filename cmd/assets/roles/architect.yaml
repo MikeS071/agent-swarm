@@ -1,0 +1,9 @@
+role: architect
+profile: architect.md
+rules:
+  - base.md
+  - architect.md
+skills:
+  - api-design
+  - backend-patterns
+  - coding-standards

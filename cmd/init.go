@@ -19,6 +19,7 @@ import (
 )
 
 var initSkipPrereqChecks bool
+var initWithAgentkit bool
 
 var initCmd = &cobra.Command{
 	Use:   "init <project>",
@@ -26,7 +27,7 @@ var initCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		project := args[0]
-		if err := scaffoldProject(project); err != nil {
+		if err := scaffoldProjectWithOptions(project, initWithAgentkit); err != nil {
 			return err
 		}
 		if initSkipPrereqChecks {
@@ -37,6 +38,7 @@ var initCmd = &cobra.Command{
 }
 
 func init() {
+	initCmd.Flags().BoolVar(&initWithAgentkit, "with-agentkit", true, "scaffold .agents and .codex/rules agentkit assets")
 	initCmd.Flags().BoolVar(&initSkipPrereqChecks, "skip-prereq-checks", false, "skip post-init compliance checks and watchdog install")
 	rootCmd.AddCommand(initCmd)
 }
@@ -81,6 +83,10 @@ func defaultStateDir(projectName string) (string, error) {
 }
 
 func scaffoldProject(project string) error {
+	return scaffoldProjectWithOptions(project, true)
+}
+
+func scaffoldProjectWithOptions(project string, withAgentkit bool) error {
 	root := project
 	projectName := filepath.Base(filepath.Clean(project))
 	if absRoot, err := filepath.Abs(root); err == nil {
@@ -92,9 +98,14 @@ func scaffoldProject(project string) error {
 		filepath.Join(root, "swarm", "prompts"),
 		filepath.Join(root, "swarm", "features"),
 		filepath.Join(root, "swarm", "logs"),
-		filepath.Join(root, ".agents", "skills"),
-		filepath.Join(root, ".agents", "profiles"),
-		filepath.Join(root, ".codex", "rules"),
+	}
+	if withAgentkit {
+		dirs = append(dirs,
+			filepath.Join(root, ".agents", "skills"),
+			filepath.Join(root, ".agents", "profiles"),
+			filepath.Join(root, ".agents", "roles"),
+			filepath.Join(root, ".codex", "rules"),
+		)
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -164,33 +175,42 @@ func scaffoldProject(project string) error {
 	// Copy embedded assets
 	copied := 0
 
-	// AGENTS.md
-	n, err := copyEmbedDir(assets, "assets/AGENTS.md", root)
-	if err != nil {
-		return fmt.Errorf("copy AGENTS.md: %w", err)
-	}
-	copied += n
+	if withAgentkit {
+		// AGENTS.md
+		n, err := copyEmbedDir(assets, "assets/AGENTS.md", root)
+		if err != nil {
+			return fmt.Errorf("copy AGENTS.md: %w", err)
+		}
+		copied += n
 
-	// Skills
-	n, err = copyEmbedTree(assets, "assets/skills", filepath.Join(root, ".agents", "skills"))
-	if err != nil {
-		return fmt.Errorf("copy skills: %w", err)
-	}
-	copied += n
+		// Skills
+		n, err = copyEmbedTree(assets, "assets/skills", filepath.Join(root, ".agents", "skills"))
+		if err != nil {
+			return fmt.Errorf("copy skills: %w", err)
+		}
+		copied += n
 
-	// Profiles
-	n, err = copyEmbedTree(assets, "assets/profiles", filepath.Join(root, ".agents", "profiles"))
-	if err != nil {
-		return fmt.Errorf("copy profiles: %w", err)
-	}
-	copied += n
+		// Profiles
+		n, err = copyEmbedTree(assets, "assets/profiles", filepath.Join(root, ".agents", "profiles"))
+		if err != nil {
+			return fmt.Errorf("copy profiles: %w", err)
+		}
+		copied += n
 
-	// Rules
-	n, err = copyEmbedTree(assets, "assets/rules", filepath.Join(root, ".codex", "rules"))
-	if err != nil {
-		return fmt.Errorf("copy rules: %w", err)
+		// Roles
+		n, err = copyEmbedTree(assets, "assets/roles", filepath.Join(root, ".agents", "roles"))
+		if err != nil {
+			return fmt.Errorf("copy roles: %w", err)
+		}
+		copied += n
+
+		// Rules
+		n, err = copyEmbedTree(assets, "assets/rules", filepath.Join(root, ".codex", "rules"))
+		if err != nil {
+			return fmt.Errorf("copy rules: %w", err)
+		}
+		copied += n
 	}
-	copied += n
 
 	if err := ensureGitBootstrap(root, cfg.Project.BaseBranch); err != nil {
 		return fmt.Errorf("git bootstrap: %w", err)
@@ -202,7 +222,11 @@ func scaffoldProject(project string) error {
 
 	fmt.Printf("✅ Initialized %s\n", projectName)
 	fmt.Printf("   swarm.toml + state tracker (%s)\n", cfg.Project.Tracker)
-	fmt.Printf("   %d asset files (AGENTS.md, skills, profiles, rules)\n", copied)
+	if withAgentkit {
+		fmt.Printf("   %d asset files (AGENTS.md, skills, profiles, roles, rules)\n", copied)
+	} else {
+		fmt.Printf("   agentkit scaffolding skipped (--with-agentkit=false)\n")
+	}
 	fmt.Printf("   swarm/features/ — feature lifecycle directory\n")
 	fmt.Printf("   swarm/tracker.seed.json — immutable seed tracker\n")
 	if len(archived) > 0 {
