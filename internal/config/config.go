@@ -64,8 +64,10 @@ type WatchdogConfig struct {
 }
 
 type PostBuildConfig struct {
-	Order          []string   `toml:"order"`
-	ParallelGroups [][]string `toml:"parallel_groups"`
+	Order                 []string   `toml:"order"`
+	ParallelGroups        [][]string `toml:"parallel_groups"`
+	RequireIntegratedBase bool       `toml:"require_integrated_base"`
+	IntegratedBaseBranch  string     `toml:"integrated_base_branch"`
 }
 
 type StatusReportConfig struct {
@@ -171,8 +173,10 @@ func Default() *Config {
 			BuildErrorResolver: ".agents/profiles/build-error-resolver.md",
 		},
 		PostBuild: PostBuildConfig{
-			Order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
-			ParallelGroups: [][]string{{"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}},
+			Order:                 []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			ParallelGroups:        [][]string{{"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}},
+			RequireIntegratedBase: true,
+			IntegratedBaseBranch:  "dev",
 		},
 		Guardian: GuardianConfig{Enabled: true},
 		StatusReport: StatusReportConfig{

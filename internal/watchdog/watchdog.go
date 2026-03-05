@@ -474,6 +474,13 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				if err := w.appendEvent("respawn", ticketID, data); err != nil {
 					w.log("WARN: appendEvent(respawn, %s): %v", ticketID, err)
 				}
+				// move ticket back to todo before respawn so a spawn failure does not leave stale running state
+				tk.Status = tracker.StatusTodo
+				tk.StartedAt = ""
+				tk.SessionName = ""
+				tk.SessionBackend = ""
+				tk.SessionModel = ""
+				w.tracker.Tickets[ticketID] = tk
 				if err := w.saveTracker(); err != nil {
 					w.log("WARN: saveTracker before respawn (%s): %v", ticketID, err)
 				}
@@ -968,6 +975,17 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 	branch := strings.TrimSpace(tk.Branch)
 	if branch == "" {
 		branch = "feat/" + ticketID
+	}
+
+	postBuildTicket := w.isPostBuildTicketType(strings.TrimSpace(tk.Type))
+	if postBuildTicket && w.config.PostBuild.RequireIntegratedBase {
+		base, err := w.ensurePostBuildIntegratedBase(ctx)
+		if err != nil {
+			return fmt.Errorf("post-build baseline integration required: %w", err)
+		}
+		if err := w.preparePostBuildBranch(ticketID, branch, base); err != nil {
+			return fmt.Errorf("prepare post-build branch %s from %s: %w", branch, base, err)
+		}
 	}
 
 	workDir := w.worktree.Path(ticketID)
@@ -1876,60 +1894,35 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 		return nil
 	}
 
-	features := w.collectBuildFeatureStatus(order)
-	if len(features) == 0 {
-		return nil
-	}
-
 	stepSet := make(map[string]struct{}, len(order))
 	for _, step := range order {
 		stepSet[step] = struct{}{}
 	}
 
-	runStatus := &buildFeatureStatus{PostBuildStepsSet: map[string]bool{}}
-	buildIDSet := map[string]struct{}{}
-	buildFeatures := make([]string, 0, len(features))
-	allBuildDone := true
+	nonPostBuildIDs, maxPhase, doneCount, featureHints := collectNonPostBuildSummary(w.tracker, stepSet)
+	if len(nonPostBuildIDs) == 0 {
+		return nil
+	}
 
-	for feature, fs := range features {
-		if fs == nil {
-			continue
-		}
-		if fs.BuildTotal == 0 {
-			for step := range fs.PostBuildStepsSet {
-				runStatus.PostBuildStepsSet[step] = true
-			}
-			continue
-		}
-		buildFeatures = append(buildFeatures, feature)
-		runStatus.BuildTotal += fs.BuildTotal
-		runStatus.BuildDone += fs.BuildDone
-		if fs.MaxBuildPhase > runStatus.MaxBuildPhase {
-			runStatus.MaxBuildPhase = fs.MaxBuildPhase
-		}
-		if fs.BuildDone != fs.BuildTotal {
-			allBuildDone = false
-		}
-		for _, id := range fs.BuildIDs {
-			if _, ok := buildIDSet[id]; ok {
-				continue
-			}
-			buildIDSet[id] = struct{}{}
-			runStatus.BuildIDs = append(runStatus.BuildIDs, id)
-		}
-		for step := range fs.PostBuildStepsSet {
+	scopeSteps := collectPostBuildScopeSteps(w.tracker, stepSet)
+	runFeature, ok := choosePostBuildScope(scopeSteps, featureHints)
+	if !ok {
+		w.log("WARN: multiple post-build scopes detected (%d); skipping auto-seed", len(scopeSteps))
+		return nil
+	}
+
+	runStatus := &buildFeatureStatus{
+		BuildIDs:          nonPostBuildIDs,
+		BuildDone:         doneCount,
+		BuildTotal:        len(nonPostBuildIDs),
+		MaxBuildPhase:     maxPhase,
+		PostBuildStepsSet: map[string]bool{},
+	}
+	if steps, ok := scopeSteps[runFeature]; ok {
+		for step := range steps {
 			runStatus.PostBuildStepsSet[step] = true
 		}
 	}
-
-	if runStatus.BuildTotal == 0 || !allBuildDone {
-		return nil
-	}
-	if hasUndoneNonPostBuildTickets(w.tracker, stepSet) {
-		return nil
-	}
-	sort.Strings(runStatus.BuildIDs)
-	sort.Strings(buildFeatures)
 
 	missing := false
 	for _, step := range order {
@@ -1942,13 +1935,8 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 		return nil
 	}
 
-	runFeature := "run"
-	if len(buildFeatures) == 1 {
-		runFeature = buildFeatures[0]
-	}
-
 	if w.dryRun {
-		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would create post-build tickets once for run scope %s", runFeature))
+		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would pre-seed run-scope post-build tickets (scope=%s)", runFeature))
 		return nil
 	}
 
@@ -1956,16 +1944,423 @@ func (w *Watchdog) ensurePostBuildTickets(ctx context.Context) error {
 	if created == 0 {
 		return nil
 	}
-	msg := fmt.Sprintf("run build complete — created %d post-build tickets (scope=%s)", created, runFeature)
+	msg := fmt.Sprintf("pre-seeded %d run-scope post-build tickets (scope=%s)", created, runFeature)
 	_ = w.notifier.Info(ctx, msg)
 	if err := w.appendEvent("post_build_generated", "", map[string]any{
 		"scope":   "run",
 		"feature": runFeature,
 		"created": created,
+		"seeded":  true,
 	}); err != nil {
 		w.log("WARN: appendEvent(post_build_generated, %s): %v", runFeature, err)
 	}
 	return w.saveTracker()
+}
+
+type postBuildIntegrationMarker struct {
+	Base      string   `json:"base"`
+	Signature string   `json:"signature"`
+	MergedSHA string   `json:"merged_sha"`
+	Branches  []string `json:"branches"`
+	UpdatedAt string   `json:"updated_at"`
+}
+
+func (w *Watchdog) postBuildStepSet() (map[string]struct{}, bool) {
+	order, _, enabled := w.postBuildPlan()
+	if !enabled {
+		return nil, false
+	}
+	stepSet := make(map[string]struct{}, len(order))
+	for _, step := range order {
+		stepSet[step] = struct{}{}
+	}
+	return stepSet, true
+}
+
+func (w *Watchdog) isPostBuildTicketType(ticketType string) bool {
+	stepSet, ok := w.postBuildStepSet()
+	if !ok {
+		return false
+	}
+	_, is := stepSet[strings.TrimSpace(ticketType)]
+	return is
+}
+
+func (w *Watchdog) integratedBaseBranch() string {
+	if w == nil || w.config == nil {
+		return ""
+	}
+	if b := strings.TrimSpace(w.config.PostBuild.IntegratedBaseBranch); b != "" {
+		return b
+	}
+	return strings.TrimSpace(w.config.Project.BaseBranch)
+}
+
+func (w *Watchdog) ensurePostBuildIntegratedBase(ctx context.Context) (string, error) {
+	if w == nil || w.config == nil || w.tracker == nil {
+		return "", nil
+	}
+	stepSet, ok := w.postBuildStepSet()
+	if !ok {
+		return "", nil
+	}
+	branches, signature := w.doneBranchesForPostBuildBaseline(stepSet)
+	if len(branches) == 0 {
+		return w.integratedBaseBranch(), nil
+	}
+
+	repo := w.projectRoot()
+	if repo == "" {
+		return "", fmt.Errorf("project root is empty")
+	}
+	base, err := w.resolveIntegratedBaseBranch(repo)
+	if err != nil {
+		return "", err
+	}
+
+	markerPath := filepath.Join(w.runtimeStateRoot(), "post-build-merge.json")
+	if marker, err := readPostBuildIntegrationMarker(markerPath); err == nil {
+		if marker.Base == base && marker.Signature == signature {
+			if head, hErr := w.gitOutput(repo, "rev-parse", "--short", base); hErr == nil && strings.TrimSpace(head) == strings.TrimSpace(marker.MergedSHA) {
+				return base, nil
+			}
+		}
+	}
+
+	mergedSHA, err := w.mergeBranchesIntoBase(repo, base, branches)
+	if err != nil {
+		return "", err
+	}
+
+	if err := writePostBuildIntegrationMarker(markerPath, postBuildIntegrationMarker{
+		Base:      base,
+		Signature: signature,
+		MergedSHA: mergedSHA,
+		Branches:  branches,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		w.log("WARN: write post-build marker: %v", err)
+	}
+	_ = w.notifier.Info(ctx, fmt.Sprintf("post-build baseline merged into %s (%s)", base, mergedSHA))
+	_ = w.appendEvent("post_build_baseline_merged", "", map[string]any{"base": base, "sha": mergedSHA, "branches": len(branches)})
+	return base, nil
+}
+
+func integratedDependencySet(tr *tracker.Tracker, stepSet map[string]struct{}) map[string]struct{} {
+	out := map[string]struct{}{}
+	if tr == nil {
+		return out
+	}
+	var visit func(string)
+	visit = func(id string) {
+		if _, seen := out[id]; seen {
+			return
+		}
+		tk, ok := tr.Tickets[id]
+		if !ok {
+			return
+		}
+		typeName := strings.TrimSpace(tk.Type)
+		if _, isPost := stepSet[typeName]; isPost {
+			return
+		}
+		out[id] = struct{}{}
+		for _, dep := range tk.Depends {
+			visit(strings.TrimSpace(dep))
+		}
+	}
+
+	for id, tk := range tr.Tickets {
+		if tk.Status != tracker.StatusDone {
+			continue
+		}
+		if strings.TrimSpace(tk.Type) != "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(id), "int-") {
+			continue
+		}
+		for _, dep := range tk.Depends {
+			visit(strings.TrimSpace(dep))
+		}
+	}
+	return out
+}
+
+func (w *Watchdog) doneBranchesForPostBuildBaseline(stepSet map[string]struct{}) ([]string, string) {
+	if w == nil || w.tracker == nil {
+		return nil, ""
+	}
+	integratedDeps := integratedDependencySet(w.tracker, stepSet)
+	order := w.tracker.DependencyOrder()
+	if len(order) == 0 {
+		for id := range w.tracker.Tickets {
+			order = append(order, id)
+		}
+		sort.Strings(order)
+	}
+
+	branches := make([]string, 0, len(order))
+	seen := map[string]struct{}{}
+	h := sha256.New()
+	for _, id := range order {
+		tk, ok := w.tracker.Tickets[id]
+		if !ok {
+			continue
+		}
+		if tk.Status != tracker.StatusDone {
+			continue
+		}
+		if _, skip := integratedDeps[id]; skip {
+			continue
+		}
+		branch := strings.TrimSpace(tk.Branch)
+		if branch == "" {
+			branch = "feat/" + id
+		}
+		if _, dup := seen[branch]; dup {
+			continue
+		}
+		seen[branch] = struct{}{}
+		branches = append(branches, branch)
+
+		ticketType := strings.TrimSpace(tk.Type)
+		typeGroup := "build"
+		if _, isPost := stepSet[ticketType]; isPost {
+			typeGroup = "post_build"
+		}
+		_, _ = h.Write([]byte(id + "|" + typeGroup + "|" + branch + "|" + strings.TrimSpace(tk.SHA) + "\n"))
+	}
+	return branches, hex.EncodeToString(h.Sum(nil))
+}
+
+func (w *Watchdog) resolveIntegratedBaseBranch(repo string) (string, error) {
+	base := strings.TrimSpace(w.integratedBaseBranch())
+	if base == "" {
+		base = "main"
+	}
+	if _, err := w.gitOutput(repo, "fetch", "origin"); err != nil {
+		w.log("WARN: git fetch origin failed: %v", err)
+	}
+	if branchExists(repo, base) || remoteBranchExists(repo, base) {
+		return base, nil
+	}
+	fallback := strings.TrimSpace(w.config.Project.BaseBranch)
+	if fallback == "" {
+		fallback = "main"
+	}
+	if branchExists(repo, fallback) || remoteBranchExists(repo, fallback) {
+		w.log("WARN: integrated base branch %s missing; falling back to %s", base, fallback)
+		return fallback, nil
+	}
+	return "", fmt.Errorf("integrated base branch %q not found (fallback %q missing)", base, fallback)
+}
+
+func (w *Watchdog) mergeBranchesIntoBase(repo, base string, branches []string) (string, error) {
+	if len(branches) == 0 {
+		sha, _ := w.gitOutput(repo, "rev-parse", "--short", base)
+		return strings.TrimSpace(sha), nil
+	}
+
+	wtPath := filepath.Join(w.runtimeStateRoot(), "post-build-merge-wt")
+	tmpBranch := fmt.Sprintf("post-build-merge-%d", time.Now().UTC().UnixNano())
+	_ = w.gitNoisy(repo, "worktree", "remove", "--force", wtPath)
+	_ = os.RemoveAll(wtPath)
+
+	startRef := base
+	if !branchExists(repo, base) {
+		startRef = "origin/" + base
+	}
+	if _, err := w.gitOutput(repo, "worktree", "add", "-B", tmpBranch, wtPath, startRef); err != nil {
+		return "", fmt.Errorf("create merge worktree: %w", err)
+	}
+	defer func() {
+		_ = w.gitNoisy(repo, "worktree", "remove", "--force", wtPath)
+		_ = w.gitNoisy(repo, "branch", "-D", tmpBranch)
+		_ = os.RemoveAll(wtPath)
+	}()
+
+	seen := map[string]struct{}{}
+	for _, branch := range branches {
+		branch = strings.TrimSpace(branch)
+		if branch == "" || branch == base {
+			continue
+		}
+		if _, ok := seen[branch]; ok {
+			continue
+		}
+		seen[branch] = struct{}{}
+		if !branchExists(repo, branch) && remoteBranchExists(repo, branch) {
+			if _, err := w.gitOutput(repo, "fetch", "origin", branch+":"+branch); err != nil {
+				return "", fmt.Errorf("fetch branch %s: %w", branch, err)
+			}
+		}
+		if _, err := w.gitOutput(wtPath, "merge", branch, "--no-ff", "--no-edit"); err != nil {
+			resolved, rerr := w.tryAutoResolveArtifactMergeConflicts(wtPath)
+			if rerr != nil {
+				return "", fmt.Errorf("merge %s into %s: %w", branch, base, rerr)
+			}
+			if !resolved {
+				return "", fmt.Errorf("merge %s into %s: %w", branch, base, err)
+			}
+		}
+	}
+
+	if verify := strings.TrimSpace(w.config.Integration.VerifyCmd); verify != "" {
+		cmd := exec.Command("bash", "-lc", verify)
+		cmd.Dir = wtPath
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("integration verify failed: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+	}
+
+	if _, err := w.gitOutput(wtPath, "push", "origin", "HEAD:"+base); err != nil {
+		if strings.Contains(err.Error(), "non-fast-forward") {
+			if _, ferr := w.gitOutput(repo, "fetch", "origin", base); ferr == nil {
+				if _, merr := w.gitOutput(wtPath, "merge", "origin/"+base, "--no-ff", "--no-edit"); merr == nil {
+					if _, perr := w.gitOutput(wtPath, "push", "origin", "HEAD:"+base); perr == nil {
+						goto pushed
+					}
+				}
+			}
+		}
+		return "", fmt.Errorf("push merged base %s: %w", base, err)
+	}
+pushed:
+	sha, err := w.gitOutput(wtPath, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(sha), nil
+}
+
+func (w *Watchdog) preparePostBuildBranch(ticketID, branch, base string) error {
+	if w == nil || w.config == nil {
+		return nil
+	}
+	repo := w.projectRoot()
+	if repo == "" {
+		return fmt.Errorf("project root is empty")
+	}
+	if strings.TrimSpace(base) == "" {
+		base = strings.TrimSpace(w.config.Project.BaseBranch)
+	}
+	if strings.TrimSpace(base) == "" {
+		base = "main"
+	}
+	if w.worktree.Exists(ticketID) {
+		if err := w.worktree.Remove(ticketID); err != nil {
+			w.log("WARN: remove existing post-build worktree %s: %v", ticketID, err)
+		}
+	}
+	if _, err := w.gitOutput(repo, "branch", "-f", branch, base); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (w *Watchdog) tryAutoResolveArtifactMergeConflicts(wtPath string) (bool, error) {
+	filesOut, err := w.gitOutput(wtPath, "diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(strings.TrimSpace(filesOut), "\n")
+	conflicts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		f := strings.TrimSpace(line)
+		if f != "" {
+			conflicts = append(conflicts, f)
+		}
+	}
+	if len(conflicts) == 0 {
+		return false, nil
+	}
+	for _, f := range conflicts {
+		if !isPostBuildArtifactPath(f) {
+			return false, nil
+		}
+	}
+	for _, f := range conflicts {
+		if _, err := w.gitOutput(wtPath, "checkout", "--theirs", "--", f); err != nil {
+			return false, err
+		}
+		if _, err := w.gitOutput(wtPath, "add", "--", f); err != nil {
+			return false, err
+		}
+	}
+	if _, err := w.gitOutput(wtPath, "commit", "--no-edit"); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func isPostBuildArtifactPath(path string) bool {
+	p := filepath.ToSlash(strings.TrimSpace(path))
+	if !strings.HasPrefix(p, "swarm/features/") {
+		return false
+	}
+	base := filepath.Base(p)
+	switch base {
+	case "review-report.json", "sec-report.json", "test-report.md", "gap-report.md", "doc-report.md", "clean-report.md", "mem-report.md":
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *Watchdog) gitOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %v: %w (%s)", args, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (w *Watchdog) gitNoisy(dir string, args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	return cmd.Run()
+}
+
+func branchExists(repo, name string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", name)
+	cmd.Dir = repo
+	return cmd.Run() == nil
+}
+
+func remoteBranchExists(repo, name string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", "origin/"+name)
+	cmd.Dir = repo
+	return cmd.Run() == nil
+}
+
+func readPostBuildIntegrationMarker(path string) (postBuildIntegrationMarker, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return postBuildIntegrationMarker{}, err
+	}
+	var m postBuildIntegrationMarker
+	if err := json.Unmarshal(b, &m); err != nil {
+		return postBuildIntegrationMarker{}, err
+	}
+	return m, nil
+}
+
+func writePostBuildIntegrationMarker(path string, m postBuildIntegrationMarker) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
 }
 
 func (w *Watchdog) postBuildPlan() ([]string, [][]string, bool) {
@@ -2084,27 +2479,16 @@ func parseBuildID(id string) (string, bool) {
 	return feature, true
 }
 
-func postBuildStepFromTicket(id string, tk tracker.Ticket, stepSet map[string]struct{}) (step, feature string, ok bool) {
+func postBuildStepFromTicket(_ string, tk tracker.Ticket, stepSet map[string]struct{}) (step, feature string, ok bool) {
 	ticketType := strings.TrimSpace(tk.Type)
 	feature = strings.TrimSpace(tk.Feature)
-	if ticketType != "" {
-		if _, isStep := stepSet[ticketType]; isStep && feature != "" {
-			return ticketType, feature, true
-		}
-	}
-	i := strings.Index(id, "-")
-	if i <= 0 || i+1 >= len(id) {
+	if ticketType == "" || feature == "" {
 		return "", "", false
 	}
-	step = strings.TrimSpace(id[:i])
-	feature = strings.TrimSpace(id[i+1:])
-	if step == "" || feature == "" {
+	if _, isStep := stepSet[ticketType]; !isStep {
 		return "", "", false
 	}
-	if _, isStep := stepSet[step]; !isStep {
-		return "", "", false
-	}
-	return step, feature, true
+	return ticketType, feature, true
 }
 
 func (w *Watchdog) createPostBuildTicketsForFeature(
@@ -2181,20 +2565,75 @@ func (w *Watchdog) createPostBuildTicketsForFeature(
 	return created
 }
 
-func hasUndoneNonPostBuildTickets(tr *tracker.Tracker, stepSet map[string]struct{}) bool {
+func collectNonPostBuildSummary(tr *tracker.Tracker, stepSet map[string]struct{}) (ids []string, maxPhase, doneCount int, featureHints map[string]struct{}) {
+	featureHints = map[string]struct{}{}
 	if tr == nil {
-		return false
+		return nil, 0, 0, featureHints
 	}
-	for _, tk := range tr.Tickets {
+	ids = make([]string, 0, len(tr.Tickets))
+	for id, tk := range tr.Tickets {
 		t := strings.TrimSpace(tk.Type)
 		if _, isPostBuild := stepSet[t]; isPostBuild {
 			continue
 		}
-		if tk.Status != tracker.StatusDone {
-			return true
+		ids = append(ids, id)
+		if tk.Phase > maxPhase {
+			maxPhase = tk.Phase
+		}
+		if tk.Status == tracker.StatusDone {
+			doneCount++
+		}
+		if feature, ok := buildFeatureFromTicket(id, tk, stepSet); ok && strings.TrimSpace(feature) != "" {
+			featureHints[feature] = struct{}{}
 		}
 	}
-	return false
+	sort.Strings(ids)
+	if maxPhase <= 0 {
+		maxPhase = 1
+	}
+	return ids, maxPhase, doneCount, featureHints
+}
+
+func collectPostBuildScopeSteps(tr *tracker.Tracker, stepSet map[string]struct{}) map[string]map[string]bool {
+	scopes := map[string]map[string]bool{}
+	if tr == nil {
+		return scopes
+	}
+	for id, tk := range tr.Tickets {
+		step, feature, ok := postBuildStepFromTicket(id, tk, stepSet)
+		if !ok {
+			continue
+		}
+		feature = strings.TrimSpace(feature)
+		if feature == "" {
+			continue
+		}
+		if scopes[feature] == nil {
+			scopes[feature] = map[string]bool{}
+		}
+		scopes[feature][step] = true
+	}
+	return scopes
+}
+
+func choosePostBuildScope(existing map[string]map[string]bool, featureHints map[string]struct{}) (string, bool) {
+	if len(existing) == 0 {
+		if len(featureHints) == 1 {
+			for f := range featureHints {
+				return f, true
+			}
+		}
+		return "run", true
+	}
+	if _, ok := existing["run"]; ok {
+		return "run", true
+	}
+	if len(existing) == 1 {
+		for f := range existing {
+			return f, true
+		}
+	}
+	return "", false
 }
 
 func buildPostBuildStages(order []string, parallelGroups [][]string) [][]string {
