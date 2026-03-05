@@ -474,6 +474,13 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				if err := w.appendEvent("respawn", ticketID, data); err != nil {
 					w.log("WARN: appendEvent(respawn, %s): %v", ticketID, err)
 				}
+				// move ticket back to todo before respawn so a spawn failure does not leave stale running state
+				tk.Status = tracker.StatusTodo
+				tk.StartedAt = ""
+				tk.SessionName = ""
+				tk.SessionBackend = ""
+				tk.SessionModel = ""
+				w.tracker.Tickets[ticketID] = tk
 				if err := w.saveTracker(); err != nil {
 					w.log("WARN: saveTracker before respawn (%s): %v", ticketID, err)
 				}
@@ -2209,8 +2216,18 @@ func (w *Watchdog) mergeBranchesIntoBase(repo, base string, branches []string) (
 	}
 
 	if _, err := w.gitOutput(wtPath, "push", "origin", "HEAD:"+base); err != nil {
+		if strings.Contains(err.Error(), "non-fast-forward") {
+			if _, ferr := w.gitOutput(repo, "fetch", "origin", base); ferr == nil {
+				if _, merr := w.gitOutput(wtPath, "merge", "origin/"+base, "--no-ff", "--no-edit"); merr == nil {
+					if _, perr := w.gitOutput(wtPath, "push", "origin", "HEAD:"+base); perr == nil {
+						goto pushed
+					}
+				}
+			}
+		}
 		return "", fmt.Errorf("push merged base %s: %w", base, err)
 	}
+pushed:
 	sha, err := w.gitOutput(wtPath, "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return "", err
