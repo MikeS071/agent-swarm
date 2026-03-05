@@ -267,13 +267,18 @@ func (s *Server) handleProjectStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sig, spawnable := s.dispatcher.Evaluate()
+	order := serverPostBuildOrder(s.cfg)
+	featureStats := featureStatsFromTracker(s.tracker, order)
+	runProgress := runProgressFromTracker(s.tracker, order)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":        s.tracker.Project,
 		"signal":         sig,
 		"spawnable":      spawnable,
 		"phase_status":   s.dispatcher.PhaseStatus(),
 		"stats":          s.tracker.Stats(),
-		"tickets":        s.tracker.Tickets,
+		"feature_stats": featureStats,
+		"run_progress":  runProgress,
+		"tickets":       s.tracker.Tickets,
 		"current_run_id": strings.TrimSpace(s.tracker.CurrentRunID),
 		"runs":           s.tracker.Runs,
 	})
@@ -307,15 +312,20 @@ func (s *Server) handleProjectStats(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RLock()
 	stats := s.tracker.Stats()
+	order := serverPostBuildOrder(s.cfg)
+	featureStats := featureStatsFromTracker(s.tracker, order)
+	runProgress := runProgressFromTracker(s.tracker, order)
 	s.mu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"done":        stats.Done,
-		"running":     stats.Running,
-		"todo":        stats.Todo,
-		"failed":      stats.Failed,
-		"blocked":     stats.Blocked,
-		"total":       stats.Total,
-		"eta_minutes": 0,
+		"done":          stats.Done,
+		"running":       stats.Running,
+		"todo":          stats.Todo,
+		"failed":        stats.Failed,
+		"blocked":       stats.Blocked,
+		"total":         stats.Total,
+		"eta_minutes":   0,
+		"feature_stats": featureStats,
+		"run_progress":  runProgress,
 	})
 }
 

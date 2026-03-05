@@ -17,8 +17,8 @@ import (
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
 	"github.com/MikeS071/agent-swarm/internal/progress"
 	"github.com/MikeS071/agent-swarm/internal/sysinfo"
-	"github.com/MikeS071/agent-swarm/internal/version"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
+	"github.com/MikeS071/agent-swarm/internal/version"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -322,9 +322,12 @@ func (m model) renderList() string {
 	if m.tracker == nil || m.config == nil {
 		return "loading..."
 	}
-	stats := m.tracker.Stats()
-	done := stats.Done
-	total := stats.Total
+	order := postBuildOrder(m.config)
+	featureStats := summarizeFeatureStats(m.tracker, order)
+	runStats := summarizeRunProgress(m.tracker, order)
+	agentStats := m.tracker.Stats()
+	done := featureStats.Done
+	total := featureStats.Total
 	pct := 0
 	if total > 0 {
 		pct = done * 100 / total
@@ -340,8 +343,21 @@ func (m model) renderList() string {
 	}
 	title := lipgloss.NewStyle().Bold(true).Render("agent-swarm " + appVersion() + " — " + m.config.Project.Name + " [" + modeTag + "]")
 	b.WriteString(title + "\n")
-	b.WriteString(fmt.Sprintf("Progress: %s %d/%d (%d%%)\n", renderBarOnly(done, total, 24), done, total, pct))
-	b.WriteString(fmt.Sprintf("Phase: %d | Agents: %d/%d | RAM: %s\n", phase, stats.Running, m.config.Project.MaxAgents, ramText))
+	b.WriteString(fmt.Sprintf("Feature Progress: %s %d/%d (%d%%)\n", renderBarOnly(done, total, 24), done, total, pct))
+	b.WriteString(fmt.Sprintf(
+		"Run Progress: integration=%s | post-build=%d/%d (running=%d failed=%d pending=%d skipped=%d)\n",
+		runStats.IntegrationStatus,
+		runStats.PostBuildDone,
+		runStats.PostBuildTotal,
+		runStats.PostBuildRunning,
+		runStats.PostBuildFailed,
+		runStats.PostBuildPending,
+		runStats.PostBuildSkipped,
+	))
+	if len(runStats.PostBuildOrder) > 0 {
+		b.WriteString("Post-build: " + formatPostBuildSteps(runStats.PostBuildOrder, runStats.PostBuildSteps) + "\n")
+	}
+	b.WriteString(fmt.Sprintf("Phase: %d | Agents: %d/%d | RAM: %s\n", phase, agentStats.Running, m.config.Project.MaxAgents, ramText))
 	b.WriteString(strings.Repeat("-", maxInt(20, m.width-2)) + "\n")
 	startIdx := m.page * m.pageSize
 	endIdx := startIdx + m.pageSize

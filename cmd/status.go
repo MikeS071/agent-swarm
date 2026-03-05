@@ -63,13 +63,13 @@ var statusCmd = &cobra.Command{
 			return runLiveStatus(cfgFile, cfg)
 		}
 		if statusJSON {
-			return printStatusJSON(tr)
+			return printStatusJSON(cfg, tr)
 		}
 		if statusCompact {
-			printStatusCompact(tr)
+			printStatusCompact(cfg, tr)
 			return nil
 		}
-		printStatusTable(tr)
+		printStatusTable(cfg, tr)
 		return nil
 	},
 }
@@ -83,7 +83,7 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 }
 
-func printStatusJSON(tr *tracker.Tracker) error {
+func printStatusJSON(cfg *config.Config, tr *tracker.Tracker) error {
 	ids := make([]string, 0, len(tr.Tickets))
 	for id := range tr.Tickets {
 		ids = append(ids, id)
@@ -95,12 +95,21 @@ func printStatusJSON(tr *tracker.Tracker) error {
 		tickets[id] = tr.Tickets[id]
 	}
 
+	order := normalizedStatusOrder(nil)
+	if cfg != nil {
+		order = normalizedStatusOrder(cfg.PostBuild.Order)
+	}
+	featureStats := statusFeatureStats(tr, order)
+	runProgress := statusRunProgressSummary(tr, order)
+
 	payload := struct {
 		Project      string                      `json:"project"`
 		ActivePhase  int                         `json:"activePhase"`
 		CurrentRunID string                      `json:"currentRunId,omitempty"`
 		Runs         map[string]tracker.RunState `json:"runs,omitempty"`
 		Stats        tracker.Stats               `json:"stats"`
+		FeatureStats tracker.Stats               `json:"featureStats"`
+		RunProgress  statusRunProgress           `json:"runProgress"`
 		Spawnable    []string                    `json:"spawnable"`
 		Tickets      map[string]tracker.Ticket   `json:"tickets"`
 	}{
@@ -109,6 +118,8 @@ func printStatusJSON(tr *tracker.Tracker) error {
 		CurrentRunID: strings.TrimSpace(tr.CurrentRunID),
 		Runs:         tr.Runs,
 		Stats:        tr.Stats(),
+		FeatureStats: featureStats,
+		RunProgress:  runProgress,
 		Spawnable:    tr.GetSpawnable(),
 		Tickets:      tickets,
 	}
@@ -117,12 +128,32 @@ func printStatusJSON(tr *tracker.Tracker) error {
 	return enc.Encode(payload)
 }
 
-func printStatusTable(tr *tracker.Tracker) {
+func printStatusTable(cfg *config.Config, tr *tracker.Tracker) {
 	fmt.Fprintf(color.Output, "Project: %s\n", tr.Project)
 	fmt.Fprintf(color.Output, "Active phase: %d\n", tr.ActivePhase())
 	stats := tr.Stats()
 	fmt.Fprintf(color.Output, "Stats: done=%d running=%d todo=%d failed=%d blocked=%d total=%d\n\n",
 		stats.Done, stats.Running, stats.Todo, stats.Failed, stats.Blocked, stats.Total)
+	order := normalizedStatusOrder(nil)
+	if cfg != nil {
+		order = normalizedStatusOrder(cfg.PostBuild.Order)
+	}
+	featureStats := statusFeatureStats(tr, order)
+	runProgress := statusRunProgressSummary(tr, order)
+	fmt.Fprintf(color.Output, "Feature stats: done=%d running=%d todo=%d failed=%d blocked=%d total=%d\n",
+		featureStats.Done, featureStats.Running, featureStats.Todo, featureStats.Failed, featureStats.Blocked, featureStats.Total)
+	fmt.Fprintf(color.Output, "Run progress: integration=%s post-build=%d/%d (running=%d failed=%d pending=%d skipped=%d)\n",
+		runProgress.IntegrationStatus,
+		runProgress.PostBuildDone,
+		runProgress.PostBuildTotal,
+		runProgress.PostBuildRunning,
+		runProgress.PostBuildFailed,
+		runProgress.PostBuildPending,
+		runProgress.PostBuildSkipped,
+	)
+	if len(order) > 0 {
+		fmt.Fprintf(color.Output, "Post-build: %s\n\n", statusPostBuildStepLine(order, runProgress.PostBuildSteps))
+	}
 
 	w := tabwriter.NewWriter(color.Output, 0, 8, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tPHASE\tSTATUS\tBRANCH\tDEPENDS\tDESC")
@@ -140,7 +171,7 @@ func printStatusTable(tr *tracker.Tracker) {
 	_ = w.Flush()
 }
 
-func printStatusCompact(tr *tracker.Tracker) {
+func printStatusCompact(_ *config.Config, tr *tracker.Tracker) {
 	ids := make([]string, 0, len(tr.Tickets))
 	for id := range tr.Tickets {
 		ids = append(ids, id)
@@ -170,6 +201,7 @@ func colorStatus(status string) string {
 
 func runLiveStatus(cfgFile string, cfg *config.Config) error {
 	trackerPath := resolveFromConfig(cfgFile, cfg.Project.Tracker)
+	order := normalizedStatusOrder(cfg.PostBuild.Order)
 	for {
 		tr, err := loadTrackerWithFallback(cfg, trackerPath)
 		if err != nil {
@@ -185,6 +217,8 @@ func runLiveStatus(cfgFile string, cfg *config.Config) error {
 
 		// Stats bar
 		stats := tr.Stats()
+		featureStats := statusFeatureStats(tr, order)
+		runProgress := statusRunProgressSummary(tr, order)
 		fmt.Fprintf(os.Stdout, "Project: %s  |  Phase: %d  |  ",
 			color.New(color.Bold).Sprint(tr.Project), tr.ActivePhase())
 		fmt.Fprintf(os.Stdout, "%s %s %s %s  |  Total: %d\n\n",
@@ -193,6 +227,25 @@ func runLiveStatus(cfgFile string, cfg *config.Config) error {
 			color.New(color.FgWhite).Sprintf("📋%d", stats.Todo),
 			color.New(color.FgRed).Sprintf("❌%d", stats.Failed),
 			stats.Total)
+		fmt.Fprintf(os.Stdout, "Feature stats: ✅%d 🔄%d 📋%d ❌%d | total=%d\n",
+			featureStats.Done,
+			featureStats.Running,
+			featureStats.Todo,
+			featureStats.Failed,
+			featureStats.Total,
+		)
+		fmt.Fprintf(os.Stdout, "Run progress: integration=%s post-build=%d/%d (running=%d failed=%d pending=%d skipped=%d)\n",
+			runProgress.IntegrationStatus,
+			runProgress.PostBuildDone,
+			runProgress.PostBuildTotal,
+			runProgress.PostBuildRunning,
+			runProgress.PostBuildFailed,
+			runProgress.PostBuildPending,
+			runProgress.PostBuildSkipped,
+		)
+		if len(order) > 0 {
+			fmt.Fprintf(os.Stdout, "Post-build: %s\n\n", statusPostBuildStepLine(order, runProgress.PostBuildSteps))
+		}
 
 		// Progress bar
 		if stats.Total > 0 {
@@ -237,6 +290,250 @@ func runLiveStatus(cfgFile string, cfg *config.Config) error {
 
 		time.Sleep(1 * time.Second)
 	}
+}
+
+type statusRunProgress struct {
+	RunID             string            `json:"run_id,omitempty"`
+	IntegrationStatus string            `json:"integration_status"`
+	PostBuildSteps    map[string]string `json:"post_build_steps"`
+	PostBuildDone     int               `json:"post_build_done"`
+	PostBuildRunning  int               `json:"post_build_running"`
+	PostBuildFailed   int               `json:"post_build_failed"`
+	PostBuildPending  int               `json:"post_build_pending"`
+	PostBuildSkipped  int               `json:"post_build_skipped"`
+	PostBuildTotal    int               `json:"post_build_total"`
+}
+
+func statusFeatureStats(tr *tracker.Tracker, order []string) tracker.Stats {
+	var stats tracker.Stats
+	if tr == nil {
+		return stats
+	}
+	stepSet := statusOrderSet(order)
+	for id, tk := range tr.Tickets {
+		if _, ok := statusPostBuildStepForTicket(id, tk, stepSet); ok {
+			continue
+		}
+		if statusIsIntegrationTicket(id, tk, stepSet) {
+			continue
+		}
+		stats.Total++
+		switch strings.TrimSpace(tk.Status) {
+		case tracker.StatusDone:
+			stats.Done++
+		case tracker.StatusRunning:
+			stats.Running++
+		case tracker.StatusTodo:
+			stats.Todo++
+		case tracker.StatusFailed:
+			stats.Failed++
+		case "blocked":
+			stats.Blocked++
+		}
+	}
+	return stats
+}
+
+func statusRunProgressSummary(tr *tracker.Tracker, order []string) statusRunProgress {
+	normalizedOrder := normalizedStatusOrder(order)
+	out := statusRunProgress{
+		IntegrationStatus: "pending",
+		PostBuildSteps:    map[string]string{},
+		PostBuildTotal:    len(normalizedOrder),
+	}
+	for _, step := range normalizedOrder {
+		out.PostBuildSteps[step] = "pending"
+	}
+	if tr == nil {
+		out.PostBuildPending = out.PostBuildTotal
+		return out
+	}
+
+	stepSet := statusOrderSet(normalizedOrder)
+	runID := statusChooseRunID(tr, stepSet)
+	out.RunID = runID
+
+	seen := map[string]bool{}
+	anyStep := false
+	for id, tk := range tr.Tickets {
+		ticketRunID := strings.TrimSpace(tk.RunID)
+		if runID != "" && ticketRunID != "" && ticketRunID != runID {
+			continue
+		}
+		if statusIsIntegrationTicket(id, tk, stepSet) {
+			out.IntegrationStatus = statusMergeState(out.IntegrationStatus, statusTicketToState(tk.Status))
+			continue
+		}
+		step, ok := statusPostBuildStepForTicket(id, tk, stepSet)
+		if !ok {
+			continue
+		}
+		seen[step] = true
+		anyStep = true
+		out.PostBuildSteps[step] = statusMergeState(out.PostBuildSteps[step], statusTicketToState(tk.Status))
+	}
+
+	for _, step := range normalizedOrder {
+		if seen[step] {
+			continue
+		}
+		if anyStep {
+			out.PostBuildSteps[step] = "skipped"
+		} else {
+			out.PostBuildSteps[step] = "pending"
+		}
+	}
+
+	for _, step := range normalizedOrder {
+		switch out.PostBuildSteps[step] {
+		case "done":
+			out.PostBuildDone++
+		case "running":
+			out.PostBuildRunning++
+		case "failed":
+			out.PostBuildFailed++
+		case "skipped":
+			out.PostBuildSkipped++
+		default:
+			out.PostBuildPending++
+		}
+	}
+	return out
+}
+
+func statusChooseRunID(tr *tracker.Tracker, stepSet map[string]struct{}) string {
+	bestID := ""
+	bestScore := -1
+	for id, tk := range tr.Tickets {
+		runID := strings.TrimSpace(tk.RunID)
+		if runID == "" {
+			continue
+		}
+		score := 0
+		if statusIsIntegrationTicket(id, tk, stepSet) {
+			score += 100
+		}
+		if _, ok := statusPostBuildStepForTicket(id, tk, stepSet); ok {
+			score += 80
+		}
+		switch strings.TrimSpace(tk.Status) {
+		case tracker.StatusRunning:
+			score += 30
+		case tracker.StatusTodo, "blocked":
+			score += 20
+		case tracker.StatusFailed:
+			score += 10
+		case tracker.StatusDone:
+			score += 5
+		}
+		score += tk.Phase
+		if score > bestScore || (score == bestScore && runID > bestID) {
+			bestID = runID
+			bestScore = score
+		}
+	}
+	return bestID
+}
+
+func normalizedStatusOrder(order []string) []string {
+	out := make([]string, 0, len(order))
+	seen := map[string]struct{}{}
+	for _, raw := range order {
+		step := strings.TrimSpace(raw)
+		if step == "" {
+			continue
+		}
+		if _, ok := seen[step]; ok {
+			continue
+		}
+		seen[step] = struct{}{}
+		out = append(out, step)
+	}
+	return out
+}
+
+func statusOrderSet(order []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(order))
+	for _, step := range order {
+		set[step] = struct{}{}
+	}
+	return set
+}
+
+func statusIsIntegrationTicket(id string, tk tracker.Ticket, stepSet map[string]struct{}) bool {
+	ticketType := strings.TrimSpace(tk.Type)
+	if ticketType == "integration" {
+		return true
+	}
+	if ticketType != "" {
+		return false
+	}
+	if !strings.HasPrefix(strings.TrimSpace(id), "int-") {
+		return false
+	}
+	if _, isStep := stepSet["int"]; isStep {
+		return false
+	}
+	return true
+}
+
+func statusPostBuildStepForTicket(id string, tk tracker.Ticket, stepSet map[string]struct{}) (string, bool) {
+	ticketType := strings.TrimSpace(tk.Type)
+	if ticketType != "" {
+		_, ok := stepSet[ticketType]
+		return ticketType, ok
+	}
+	rawID := strings.TrimSpace(id)
+	i := strings.Index(rawID, "-")
+	if i <= 0 || i+1 >= len(rawID) {
+		return "", false
+	}
+	step := strings.TrimSpace(rawID[:i])
+	_, ok := stepSet[step]
+	return step, ok
+}
+
+func statusTicketToState(status string) string {
+	switch strings.TrimSpace(status) {
+	case tracker.StatusDone:
+		return "done"
+	case tracker.StatusRunning:
+		return "running"
+	case tracker.StatusFailed:
+		return "failed"
+	default:
+		return "pending"
+	}
+}
+
+func statusMergeState(current, next string) string {
+	rank := map[string]int{
+		"failed":  5,
+		"running": 4,
+		"done":    3,
+		"pending": 2,
+		"skipped": 1,
+	}
+	if rank[next] > rank[current] {
+		return next
+	}
+	return current
+}
+
+func statusPostBuildStepLine(order []string, steps map[string]string) string {
+	if len(order) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(order))
+	for _, step := range order {
+		status := strings.TrimSpace(steps[step])
+		if status == "" {
+			status = "pending"
+		}
+		parts = append(parts, step+"="+status)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, " | ")
 }
 
 func resolveFromConfig(configPath, target string) string {

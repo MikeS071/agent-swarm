@@ -200,3 +200,61 @@ func TestTicketOutputSSE(t *testing.T) {
 		t.Fatalf("expected output event in body, got %q", body)
 	}
 }
+
+func TestProjectStatusIncludesRunLevelPostBuildProgress(t *testing.T) {
+	tr := tracker.New("test", map[string]tracker.Ticket{
+		"cache-1":      {Status: tracker.StatusDone, Phase: 1, Type: "feature", Feature: "cache", RunID: "run-1"},
+		"billing-1":    {Status: tracker.StatusRunning, Phase: 1, Type: "feature", Feature: "billing", RunID: "run-1"},
+		"int-run-1":    {Status: tracker.StatusDone, Phase: 2, Type: "integration", RunID: "run-1"},
+		"review-run-1": {Status: tracker.StatusDone, Phase: 3, Type: "review", RunID: "run-1"},
+		"sec-run-1":    {Status: tracker.StatusRunning, Phase: 3, Type: "sec", RunID: "run-1"},
+	})
+	cfg := config.Default()
+	cfg.Project.Name = "test"
+	cfg.PostBuild.Order = []string{"review", "sec", "doc"}
+	d := dispatcher.New(cfg, tr)
+	s := New(cfg, tr, d, &fakeBackend{}, &fakeWatchdog{}, log.New(io.Discard, "", 0))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/test/status", nil)
+	s.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if _, ok := payload["feature_stats"]; !ok {
+		t.Fatalf("expected feature_stats in payload, got %v", payload)
+	}
+	rawRun, ok := payload["run_progress"]
+	if !ok {
+		t.Fatalf("expected run_progress in payload, got %v", payload)
+	}
+	runProgress, ok := rawRun.(map[string]any)
+	if !ok {
+		t.Fatalf("run_progress type = %T, want object", rawRun)
+	}
+	if got := runProgress["integration_status"]; got != "done" {
+		t.Fatalf("integration_status = %v, want done", got)
+	}
+	rawSteps, ok := runProgress["post_build_steps"]
+	if !ok {
+		t.Fatalf("expected post_build_steps in run_progress, got %v", runProgress)
+	}
+	steps, ok := rawSteps.(map[string]any)
+	if !ok {
+		t.Fatalf("post_build_steps type = %T, want object", rawSteps)
+	}
+	if got := steps["review"]; got != "done" {
+		t.Fatalf("review step status = %v, want done", got)
+	}
+	if got := steps["sec"]; got != "running" {
+		t.Fatalf("sec step status = %v, want running", got)
+	}
+	if got := steps["doc"]; got != "skipped" {
+		t.Fatalf("doc step status = %v, want skipped", got)
+	}
+}
