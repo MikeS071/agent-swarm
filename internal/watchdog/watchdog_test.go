@@ -173,6 +173,9 @@ func TestRunOnceRespawnThenFailOnSecondNoCommitExit(t *testing.T) {
 	if got := tr.Tickets["sw-01"].Status; got != tracker.StatusRunning {
 		t.Fatalf("status after first run = %q, want running", got)
 	}
+	if got := tr.Tickets["sw-01"].RetryCount; got != 1 {
+		t.Fatalf("retry_count after first run = %d, want 1", got)
+	}
 
 	if err := w.RunOnce(context.Background()); err != nil {
 		t.Fatalf("second run once: %v", err)
@@ -181,6 +184,68 @@ func TestRunOnceRespawnThenFailOnSecondNoCommitExit(t *testing.T) {
 		t.Fatalf("status after second run = %q, want failed", got)
 	}
 	if len(n.alerts) == 0 {
+		t.Fatalf("expected alert for failed ticket")
+	}
+}
+
+func TestRunOnceRetryCountPersistsAcrossWatchdogInstances(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	if _, err := wtMgr.Create("sw-01", "feat/sw-01"); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	writeFile(t, filepath.Join(promptDir, "sw-01.md"), "# sw-01\n")
+
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-01": {Status: tracker.StatusRunning, Phase: 1, Branch: "feat/sw-01"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Watchdog: config.WatchdogConfig{MaxRetries: 2},
+		Backend:  config.BackendConfig{Model: "m", Effort: "e"},
+	}
+
+	be1 := &fakeBackend{exited: map[string]bool{"swarm-sw-01": true}}
+	w1 := New(cfg, tr, dispatcher.New(cfg, tr), be1, wtMgr, &fakeNotifier{})
+	if err := w1.RunOnce(context.Background()); err != nil {
+		t.Fatalf("first watchdog run once: %v", err)
+	}
+	if got := tr.Tickets["sw-01"].RetryCount; got != 1 {
+		t.Fatalf("retry_count after first watchdog = %d, want 1", got)
+	}
+
+	// Simulate oneshot timer restart: new watchdog instance, tracker reloaded from disk.
+	tr2, err := tracker.Load(trackerPath)
+	if err != nil {
+		t.Fatalf("reload tracker: %v", err)
+	}
+	be2 := &fakeBackend{exited: map[string]bool{"swarm-sw-01": true}}
+	n2 := &fakeNotifier{}
+	w2 := New(cfg, tr2, dispatcher.New(cfg, tr2), be2, wtMgr, n2)
+	if err := w2.RunOnce(context.Background()); err != nil {
+		t.Fatalf("second watchdog run once: %v", err)
+	}
+
+	if got := tr2.Tickets["sw-01"].Status; got != tracker.StatusFailed {
+		t.Fatalf("status after second watchdog = %q, want failed", got)
+	}
+	if got := tr2.Tickets["sw-01"].RetryCount; got != 2 {
+		t.Fatalf("retry_count after second watchdog = %d, want 2", got)
+	}
+	if len(n2.alerts) == 0 {
 		t.Fatalf("expected alert for failed ticket")
 	}
 }
@@ -268,6 +333,82 @@ func TestRunOncePhaseGateBlocksSpawning(t *testing.T) {
 	}
 }
 
+func TestPhaseGateNoticePersistsAcrossWatchdogInstances(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	writeFile(t, filepath.Join(promptDir, "sw-02.md"), "# sw-02\n")
+
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-01": {Status: tracker.StatusDone, Phase: 1, Branch: "feat/sw-01"},
+		"sw-02": {Status: tracker.StatusTodo, Phase: 2, Branch: "feat/sw-02"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+
+	be1 := &fakeBackend{}
+	n1 := &fakeNotifier{}
+	w1 := New(cfg, tr, dispatcher.New(cfg, tr), be1, wtMgr, n1)
+	if err := w1.RunOnce(context.Background()); err != nil {
+		t.Fatalf("first run once: %v", err)
+	}
+	if len(n1.infos) == 0 {
+		t.Fatalf("expected initial phase gate info notification")
+	}
+
+	tr2, err := tracker.Load(trackerPath)
+	if err != nil {
+		t.Fatalf("reload tracker: %v", err)
+	}
+	be2 := &fakeBackend{}
+	n2 := &fakeNotifier{}
+	w2 := New(cfg, tr2, dispatcher.New(cfg, tr2), be2, wtMgr, n2)
+	if err := w2.RunOnce(context.Background()); err != nil {
+		t.Fatalf("second run once: %v", err)
+	}
+	if len(n2.infos) != 0 || len(n2.alerts) != 0 {
+		t.Fatalf("expected deduped phase gate (no repeat notification), got infos=%d alerts=%d", len(n2.infos), len(n2.alerts))
+	}
+
+	// Force marker to age beyond reminder interval and verify escalation alert.
+	markerPath := w2.phaseGateNoticePath()
+	var marker phaseGateNotice
+	b, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if err := json.Unmarshal(b, &marker); err != nil {
+		t.Fatalf("unmarshal marker: %v", err)
+	}
+	old := time.Now().UTC().Add(-20 * time.Minute).Format(time.RFC3339)
+	marker.FirstSeenAt = old
+	marker.LastNoticeAt = old
+	mb, _ := json.Marshal(marker)
+	if err := os.WriteFile(markerPath, append(mb, '\n'), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	if err := w2.RunOnce(context.Background()); err != nil {
+		t.Fatalf("third run once: %v", err)
+	}
+	if len(n2.alerts) == 0 {
+		t.Fatalf("expected reminder alert after interval")
+	}
+}
+
 func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 	repo := initRepo(t)
 	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
@@ -291,7 +432,8 @@ func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 			Tracker:    trackerPath,
 			MaxAgents:  1,
 		},
-		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+		Backend:     config.BackendConfig{Model: "m", Effort: "e"},
+		Integration: config.IntegrationConfig{VerifyCmd: "go test ./..."},
 		PostBuild: config.PostBuildConfig{
 			Order: []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
 			ParallelGroups: [][]string{
@@ -317,14 +459,14 @@ func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 		profile  string
 		ticketTy string
 	}{
-		{id: "int-cch", status: tracker.StatusRunning, depends: []string{"cch-01", "cch-02"}, ticketTy: "int"},
+		{id: "int-cch", status: tracker.StatusRunning, depends: []string{"cch-01", "cch-02"}, profile: "code-agent", ticketTy: "int"},
 		{id: "gap-cch", status: tracker.StatusTodo, depends: []string{"int-cch"}, profile: "code-reviewer", ticketTy: "gap"},
 		{id: "tst-cch", status: tracker.StatusTodo, depends: []string{"int-cch"}, profile: "e2e-runner", ticketTy: "tst"},
 		{id: "review-cch", status: tracker.StatusTodo, depends: []string{"gap-cch", "tst-cch"}, profile: "code-reviewer", ticketTy: "review"},
 		{id: "sec-cch", status: tracker.StatusTodo, depends: []string{"gap-cch", "tst-cch"}, profile: "security-reviewer", ticketTy: "sec"},
 		{id: "doc-cch", status: tracker.StatusTodo, depends: []string{"review-cch", "sec-cch"}, profile: "doc-updater", ticketTy: "doc"},
 		{id: "clean-cch", status: tracker.StatusTodo, depends: []string{"review-cch", "sec-cch"}, profile: "refactor-cleaner", ticketTy: "clean"},
-		{id: "mem-cch", status: tracker.StatusTodo, depends: []string{"clean-cch", "doc-cch"}, profile: "code-reviewer", ticketTy: "mem"},
+		{id: "mem-cch", status: tracker.StatusTodo, depends: []string{"clean-cch", "doc-cch"}, profile: "doc-updater", ticketTy: "mem"},
 	}
 
 	for _, tc := range tests {
@@ -347,7 +489,43 @@ func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 		if tk.Profile != tc.profile {
 			t.Fatalf("%s profile = %q, want %q", tc.id, tk.Profile, tc.profile)
 		}
+		if tk.VerifyCmd != "go test ./..." {
+			t.Fatalf("%s verify_cmd = %q, want %q", tc.id, tk.VerifyCmd, "go test ./...")
+		}
 		assertSameDeps(t, tc.id, tk.Depends, tc.depends)
+	}
+
+	reviewPrompt, err := os.ReadFile(filepath.Join(promptDir, "review-cch.md"))
+	if err != nil {
+		t.Fatalf("read review prompt: %v", err)
+	}
+	if !strings.Contains(string(reviewPrompt), "swarm/features/cch/review-report.json") {
+		t.Fatalf("review prompt missing concrete report path:\n%s", string(reviewPrompt))
+	}
+	if !strings.Contains(string(reviewPrompt), "go test ./...") {
+		t.Fatalf("review prompt missing verify command:\n%s", string(reviewPrompt))
+	}
+
+	docPrompt, err := os.ReadFile(filepath.Join(promptDir, "doc-cch.md"))
+	if err != nil {
+		t.Fatalf("read doc prompt: %v", err)
+	}
+	if !strings.Contains(string(docPrompt), "docs/user-guide.md") || !strings.Contains(string(docPrompt), "docs/technical.md") {
+		t.Fatalf("doc prompt missing required docs targets:\n%s", string(docPrompt))
+	}
+	if !strings.Contains(string(docPrompt), "swarm/features/cch/doc-report.md") {
+		t.Fatalf("doc prompt missing doc-report deliverable:\n%s", string(docPrompt))
+	}
+
+	memPrompt, err := os.ReadFile(filepath.Join(promptDir, "mem-cch.md"))
+	if err != nil {
+		t.Fatalf("read mem prompt: %v", err)
+	}
+	if !strings.Contains(string(memPrompt), "docs/lessons-learned.md") {
+		t.Fatalf("mem prompt missing lessons-learned target:\n%s", string(memPrompt))
+	}
+	if !strings.Contains(string(memPrompt), "swarm/features/cch/mem-report.md") {
+		t.Fatalf("mem prompt missing mem-report deliverable:\n%s", string(memPrompt))
 	}
 
 	if len(be.spawnCalls) != 1 || be.spawnCalls[0].TicketID != "int-cch" {
@@ -446,6 +624,62 @@ func TestRunOncePostBuildAutoCreationIsIdempotent(t *testing.T) {
 	}
 	if len(be.spawnCalls) != 1 {
 		t.Fatalf("expected one spawn across both passes, got %d", len(be.spawnCalls))
+	}
+}
+
+func TestRunOncePostBuildAutoCreationUsesRunScopeAcrossMultipleFeatures(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"g1-01": {Status: tracker.StatusDone, Phase: 2, Branch: "feat/g1-01"},
+		"g2-01": {Status: tracker.StatusDone, Phase: 2, Branch: "feat/g2-01"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+		PostBuild: config.PostBuildConfig{
+			Order: []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			ParallelGroups: [][]string{
+				{"gap", "tst"},
+				{"review", "sec"},
+				{"doc", "clean"},
+			},
+		},
+	}
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if _, ok := tr.Tickets["int-run"]; !ok {
+		t.Fatalf("expected run-scope int ticket to exist")
+	}
+	if _, ok := tr.Tickets["int-g1"]; ok {
+		t.Fatalf("did not expect per-feature post-build ticket int-g1")
+	}
+	if _, ok := tr.Tickets["int-g2"]; ok {
+		t.Fatalf("did not expect per-feature post-build ticket int-g2")
+	}
+	if len(be.spawnCalls) != 1 || be.spawnCalls[0].TicketID != "int-run" {
+		t.Fatalf("expected one spawn for int-run, got %#v", be.spawnCalls)
 	}
 }
 
@@ -675,17 +909,16 @@ func TestAssemblePromptLayers(t *testing.T) {
 
 	cfg := &config.Config{
 		Project: config.ProjectConfig{
-			Name:           "test",
-			Tracker:        filepath.Join(tmp, "swarm", "tracker.json"),
-			PromptDir:      filepath.Join(tmp, "swarm", "prompts"),
-			SpecFile:       "SPEC.md",
-			DefaultProfile: "code-agent",
+			Name:      "test",
+			Tracker:   filepath.Join(tmp, "swarm", "tracker.json"),
+			PromptDir: filepath.Join(tmp, "swarm", "prompts"),
+			SpecFile:  "SPEC.md",
 		},
 	}
 
 	w := &Watchdog{config: cfg}
 
-	tk := tracker.Ticket{Profile: ""}
+	tk := tracker.Ticket{Profile: "code-agent"}
 	ticketPrompt := []byte("# mc-01\n\nImplement the thing")
 
 	result := string(w.assemblePrompt(tk, ticketPrompt))
@@ -728,7 +961,7 @@ func TestAssemblePromptLayers(t *testing.T) {
 	}
 }
 
-func TestAssemblePromptTicketProfileOverridesDefault(t *testing.T) {
+func TestAssemblePromptTicketProfileSelection(t *testing.T) {
 	tmp := t.TempDir()
 
 	os.MkdirAll(filepath.Join(tmp, "swarm", "prompts"), 0o755)
@@ -739,10 +972,9 @@ func TestAssemblePromptTicketProfileOverridesDefault(t *testing.T) {
 
 	cfg := &config.Config{
 		Project: config.ProjectConfig{
-			Name:           "test",
-			Tracker:        filepath.Join(tmp, "swarm", "tracker.json"),
-			PromptDir:      filepath.Join(tmp, "swarm", "prompts"),
-			DefaultProfile: "code-agent",
+			Name:      "test",
+			Tracker:   filepath.Join(tmp, "swarm", "tracker.json"),
+			PromptDir: filepath.Join(tmp, "swarm", "prompts"),
 		},
 	}
 
@@ -753,7 +985,7 @@ func TestAssemblePromptTicketProfileOverridesDefault(t *testing.T) {
 	result := string(w.assemblePrompt(tk, []byte("task")))
 
 	if strings.Contains(result, "DEFAULT PROFILE") {
-		t.Error("should NOT contain default profile when ticket has explicit profile")
+		t.Error("should NOT contain fallback profile when ticket has explicit profile")
 	}
 	if !strings.Contains(result, "SECURITY PROFILE") {
 		t.Error("should contain ticket-level profile")
@@ -1122,24 +1354,18 @@ func TestAssemblePromptReviewOutputSuffix(t *testing.T) {
 			name:          "code reviewer ticket profile",
 			ticketProfile: "code-reviewer",
 			wantSuffix:    true,
-			wantPath:      "swarm/features/<feature>/review-report.json",
+			wantPath:      "swarm/features/tp/review-report.json",
 		},
 		{
 			name:          "security reviewer ticket profile",
 			ticketProfile: "security-reviewer",
 			wantSuffix:    true,
-			wantPath:      "swarm/features/<feature>/sec-report.json",
+			wantPath:      "swarm/features/tp/sec-report.json",
 		},
 		{
 			name:          "non-review profile",
 			ticketProfile: "code-agent",
 			wantSuffix:    false,
-		},
-		{
-			name:           "default security reviewer profile",
-			defaultProfile: "security-reviewer",
-			wantSuffix:     true,
-			wantPath:       "swarm/features/<feature>/sec-report.json",
 		},
 	}
 
@@ -1152,15 +1378,18 @@ func TestAssemblePromptReviewOutputSuffix(t *testing.T) {
 
 			cfg := &config.Config{
 				Project: config.ProjectConfig{
-					Name:           "test",
-					Tracker:        filepath.Join(tmp, "swarm", "tracker.json"),
-					PromptDir:      filepath.Join(tmp, "swarm", "prompts"),
-					DefaultProfile: tc.defaultProfile,
+					Name:      "test",
+					Tracker:   filepath.Join(tmp, "swarm", "tracker.json"),
+					PromptDir: filepath.Join(tmp, "swarm", "prompts"),
 				},
 			}
 			w := &Watchdog{config: cfg}
 
-			out := string(w.assemblePrompt(tracker.Ticket{Profile: tc.ticketProfile}, []byte("task")))
+			ticket := tracker.Ticket{Profile: tc.ticketProfile, Feature: "tp", Type: "review"}
+			if tc.ticketProfile == "security-reviewer" {
+				ticket.Type = "sec"
+			}
+			out := string(w.assemblePromptForTicket(ticket.Type+"-tp", ticket, []byte("task")))
 
 			hasHeader := strings.Contains(out, "## OUTPUT FORMAT (mandatory)")
 			if hasHeader != tc.wantSuffix {

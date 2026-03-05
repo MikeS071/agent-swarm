@@ -18,6 +18,7 @@ import (
 	"github.com/MikeS071/agent-swarm/internal/progress"
 	"github.com/MikeS071/agent-swarm/internal/sysinfo"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
+	"github.com/MikeS071/agent-swarm/internal/version"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -43,6 +44,14 @@ type ticketRow struct {
 	Total       int
 	LastOutput  string
 	StatusLabel string
+}
+
+type tuiStatusHints struct {
+	Signal        string
+	BlockedReason string
+	NextAction    string
+	TrackerPath   string
+	Warning       string
 }
 
 type tickMsg time.Time
@@ -101,6 +110,7 @@ func Run(configPath string, projectName string, compact bool) error {
 	if err != nil {
 		return err
 	}
+	projects[idx].trackerPath = cfg.Project.Tracker
 
 	m := model{
 		tracker:        tr,
@@ -229,6 +239,8 @@ func (m *model) refresh() {
 		m.lastErr = err
 		return
 	}
+	m.lastErr = nil
+	m.projects[m.projectIndex].trackerPath = cfg.Project.Tracker
 	m.config = cfg
 	m.tracker = tr
 	m.backend = newBackend(cfg)
@@ -337,10 +349,27 @@ func (m model) renderList() string {
 	if m.config.Project.AutoApprove {
 		modeTag = "auto"
 	}
-	title := lipgloss.NewStyle().Bold(true).Render("agent-swarm — " + m.config.Project.Name + " [" + modeTag + "]")
+	title := lipgloss.NewStyle().Bold(true).Render("agent-swarm " + appVersion() + " — " + m.config.Project.Name + " [" + modeTag + "]")
 	b.WriteString(title + "\n")
 	b.WriteString(fmt.Sprintf("Progress: %s %d/%d (%d%%)\n", renderBarOnly(done, total, 24), done, total, pct))
 	b.WriteString(fmt.Sprintf("Phase: %d | Agents: %d/%d | RAM: %s\n", phase, stats.Running, m.config.Project.MaxAgents, ramText))
+	hints := m.deriveStatusHints()
+	if strings.TrimSpace(hints.Signal) != "" {
+		line := fmt.Sprintf("Signal: %s", hints.Signal)
+		if strings.TrimSpace(hints.BlockedReason) != "" {
+			line += " | blocked_reason=" + hints.BlockedReason
+		}
+		if strings.TrimSpace(hints.NextAction) != "" {
+			line += " | next_step=" + hints.NextAction
+		}
+		b.WriteString(line + "\n")
+	}
+	if strings.TrimSpace(hints.TrackerPath) != "" {
+		b.WriteString("Tracker: " + hints.TrackerPath + "\n")
+	}
+	if strings.TrimSpace(hints.Warning) != "" {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("Warning: "+hints.Warning) + "\n")
+	}
 	b.WriteString(strings.Repeat("-", maxInt(20, m.width-2)) + "\n")
 	startIdx := m.page * m.pageSize
 	endIdx := startIdx + m.pageSize
@@ -360,6 +389,50 @@ func (m model) renderList() string {
 		b.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.lastErr.Error()))
 	}
 	return b.String()
+}
+
+func (m model) deriveStatusHints() tuiStatusHints {
+	h := tuiStatusHints{}
+	if m.config == nil || m.tracker == nil {
+		return h
+	}
+	if len(m.projects) > 0 {
+		h.TrackerPath = m.projects[m.projectIndex].trackerPath
+	}
+	d := dispatcher.New(m.config, m.tracker)
+	sig, _ := d.Evaluate()
+	h.Signal = string(sig)
+
+	s := m.tracker.Stats()
+	switch sig {
+	case dispatcher.SignalPhaseGate:
+		h.BlockedReason = "PHASE_GATE"
+		h.NextAction = "run `agent-swarm go` to approve and continue"
+	case dispatcher.SignalBlocked:
+		switch {
+		case s.Failed > 0:
+			h.BlockedReason = "FAILED_TICKETS"
+			h.NextAction = "fix/respawn failed tickets, then rerun watchdog"
+		case s.Running > 0:
+			h.BlockedReason = "WAITING_FOR_RUNNING_TICKETS"
+			h.NextAction = "wait for running tickets to finish"
+		default:
+			h.BlockedReason = "WAITING_FOR_DEPENDENCIES"
+			h.NextAction = "inspect dependency chain and prompt/prep gates"
+		}
+	case dispatcher.SignalSpawn:
+		if !d.CanSpawnMore() {
+			h.BlockedReason = "CAPACITY_OR_RESOURCE_LIMIT"
+			h.NextAction = "reduce running agents or increase capacity"
+		}
+	}
+
+	if div, err := detectTrackerDivergenceTUI(m.config, m.config.Project.Tracker, m.tracker); err != nil {
+		h.Warning = err.Error()
+	} else if div != nil {
+		h.Warning = div.Error()
+	}
+	return h
 }
 
 func (m model) renderDetail() string {
@@ -592,11 +665,115 @@ func loadProject(p projectContext) (*config.Config, *tracker.Tracker, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	tr, err := tracker.Load(p.trackerPath)
+	trackerPath := absOrJoin(filepath.Dir(p.configPath), cfg.Project.Tracker)
+	cfg.Project.Tracker = trackerPath
+
+	tr, err := loadTrackerWithFallbackTUI(cfg, trackerPath)
 	if err != nil {
 		return nil, nil, err
 	}
+	if div, derr := detectTrackerDivergenceTUI(cfg, trackerPath, tr); derr != nil {
+		return nil, nil, derr
+	} else if div != nil {
+		return nil, nil, fmt.Errorf("%s; use a single source of truth before using TUI", div.Error())
+	}
 	return cfg, tr, nil
+}
+
+type trackerDivergence struct {
+	ActivePath    string
+	LegacyPath    string
+	ActiveTickets int
+	LegacyTickets int
+}
+
+func (d *trackerDivergence) Error() string {
+	if d == nil {
+		return ""
+	}
+	return fmt.Sprintf("tracker divergence detected: active=%s (%d tickets) vs legacy=%s (%d tickets)",
+		d.ActivePath, d.ActiveTickets, d.LegacyPath, d.LegacyTickets)
+}
+
+func loadTrackerWithFallbackTUI(cfg *config.Config, trackerPath string) (*tracker.Tracker, error) {
+	tr, err := tracker.Load(trackerPath)
+	if err == nil {
+		return tr, nil
+	}
+
+	legacy := filepath.Join(cfg.Project.Repo, "swarm", "tracker.json")
+	if filepath.Clean(legacy) == filepath.Clean(trackerPath) {
+		return nil, err
+	}
+	if _, statErr := os.Stat(legacy); statErr != nil {
+		return nil, err
+	}
+
+	legacyTracker, lerr := tracker.Load(legacy)
+	if lerr != nil {
+		return nil, err
+	}
+	if mkErr := os.MkdirAll(filepath.Dir(trackerPath), 0o755); mkErr != nil {
+		return nil, fmt.Errorf("mkdir tracker state dir: %w", mkErr)
+	}
+	if saveErr := legacyTracker.SaveTo(trackerPath); saveErr != nil {
+		return nil, fmt.Errorf("import legacy tracker from %s to %s: %w", legacy, trackerPath, saveErr)
+	}
+
+	return tracker.Load(trackerPath)
+}
+
+func detectTrackerDivergenceTUI(cfg *config.Config, trackerPath string, active *tracker.Tracker) (*trackerDivergence, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(cfg.Project.StateDir) == "" {
+		return nil, nil
+	}
+	legacyPath := filepath.Join(cfg.Project.Repo, "swarm", "tracker.json")
+	if filepath.Clean(legacyPath) == filepath.Clean(trackerPath) {
+		return nil, nil
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		return nil, nil
+	}
+	legacy, err := tracker.Load(legacyPath)
+	if err != nil {
+		return nil, nil
+	}
+	if len(legacy.Tickets) == 0 {
+		return nil, nil
+	}
+	if active == nil {
+		active, err = tracker.Load(trackerPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(active.Tickets) == 0 {
+		return nil, nil
+	}
+	if trackersEquivalentTUI(active, legacy) {
+		return nil, nil
+	}
+	return &trackerDivergence{
+		ActivePath:    trackerPath,
+		LegacyPath:    legacyPath,
+		ActiveTickets: len(active.Tickets),
+		LegacyTickets: len(legacy.Tickets),
+	}, nil
+}
+
+func trackersEquivalentTUI(a, b *tracker.Tracker) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	ab, errA := json.Marshal(a)
+	bb, errB := json.Marshal(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return string(ab) == string(bb)
 }
 
 func newBackend(cfg *config.Config) backend.AgentBackend {
@@ -636,27 +813,77 @@ func (m *model) toggleAutoApprove() {
 	if m.config == nil || len(m.projects) == 0 {
 		return
 	}
-	m.config.Project.AutoApprove = !m.config.Project.AutoApprove
+	next := !m.config.Project.AutoApprove
 	proj := m.projects[m.projectIndex]
 
-	// Write back to swarm.toml
+	// Write back to swarm.toml (robust even when auto_approve key is missing)
 	raw, err := os.ReadFile(proj.configPath)
 	if err != nil {
 		m.lastErr = fmt.Errorf("read config: %w", err)
 		return
 	}
-	updated := strings.Replace(string(raw),
-		fmt.Sprintf("auto_approve = %v", !m.config.Project.AutoApprove),
-		fmt.Sprintf("auto_approve = %v", m.config.Project.AutoApprove), 1)
+	updated, err := setProjectAutoApprove(string(raw), next)
+	if err != nil {
+		m.lastErr = fmt.Errorf("toggle auto/manual: %w", err)
+		return
+	}
 	if err := os.WriteFile(proj.configPath, []byte(updated), 0o644); err != nil {
 		m.lastErr = fmt.Errorf("write config: %w", err)
 		return
 	}
+
+	// Optimistically update local state so title bar flips immediately.
+	m.config.Project.AutoApprove = next
+
+	// Reload from disk so title bar and state stay in sync.
+	m.refresh()
+	if m.lastErr != nil {
+		return
+	}
+
 	mode := "manual (phase gates)"
-	if m.config.Project.AutoApprove {
+	if next {
 		mode = "auto (no gates)"
 	}
 	m.lastErr = fmt.Errorf("🔄 Switched to %s", mode)
+}
+
+func setProjectAutoApprove(raw string, value bool) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", fmt.Errorf("empty config")
+	}
+	lines := strings.Split(raw, "\n")
+	projectStart := -1
+	projectEnd := len(lines)
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if trim == "[project]" {
+			projectStart = i
+			continue
+		}
+		if projectStart >= 0 && strings.HasPrefix(trim, "[") && strings.HasSuffix(trim, "]") {
+			projectEnd = i
+			break
+		}
+	}
+	if projectStart < 0 {
+		return "", fmt.Errorf("missing [project] section")
+	}
+
+	newLine := fmt.Sprintf("auto_approve = %v", value)
+	for i := projectStart + 1; i < projectEnd; i++ {
+		trim := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trim, "auto_approve") {
+			indent := lines[i][:len(lines[i])-len(strings.TrimLeft(lines[i], " \t"))]
+			lines[i] = indent + newLine
+			return strings.Join(lines, "\n"), nil
+		}
+	}
+
+	updated := append([]string{}, lines[:projectEnd]...)
+	updated = append(updated, newLine)
+	updated = append(updated, lines[projectEnd:]...)
+	return strings.Join(updated, "\n"), nil
 }
 
 func (m *model) approveGate() {
@@ -904,6 +1131,10 @@ func absOrJoin(base, p string) string {
 		return p
 	}
 	return filepath.Join(base, p)
+}
+
+func appVersion() string {
+	return version.String()
 }
 
 func maxInt(a, b int) int {

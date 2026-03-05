@@ -25,12 +25,11 @@ swarm init myproject
 cd myproject
 
 # 2) Add tickets
-swarm add-ticket sw-01 --phase 1 --desc "implement tracker"
-swarm add-ticket sw-02 --phase 1 --deps sw-01 --desc "status output"
+swarm add-ticket sw-01 --phase 1 --role code-agent --verify-cmd "go test ./..." --desc "implement tracker"
+swarm add-ticket sw-02 --phase 1 --deps sw-01 --role code-agent --verify-cmd "go test ./..." --desc "status output"
 
 # 3) Create or generate prompts
 swarm prompts check
-swarm prompts gen sw-01
 
 # 4) Monitor status
 swarm status
@@ -47,7 +46,7 @@ swarm watch --once
 
 ```text
 swarm init <project>
-  Scaffold swarm.toml, swarm/tracker.json, swarm/prompts/, swarm/features/, swarm/logs/, and embedded assets
+  Scaffold project + run post-init compliance checks (prep/smoke/install watchdog)
 
 swarm add-ticket <id> [--deps a,b] [--phase N] [--desc "..."]
   Add ticket metadata to tracker
@@ -55,14 +54,23 @@ swarm add-ticket <id> [--deps a,b] [--phase N] [--desc "..."]
 swarm prompts check
   Report todo tickets missing prompts
 
-swarm prompts gen <ticket>
-  Generate prompt template for a ticket
-
 swarm status [--project NAME] [--json] [--compact] [--watch] [--live]
   Show tracker status table/JSON/compact, run Bubble Tea TUI, or 1s live terminal view
 
+swarm prep [--json]
+  Run strict preflight gate (required before watch)
+
+swarm doctor [--json]
+  Show hard-gate readiness summary
+
+swarm plan optimize [--only-todo] [--json] [--apply]
+  Compute/apply throughput-oriented ticket priorities
+
 swarm watch [--interval 5m] [--once] [--dry-run]
   Run watchdog daemon or a single pass
+
+swarm notify reset-completion
+  Clear completion marker so the next ALL_DONE can notify once again
 
 swarm go
   Approve the current phase gate
@@ -79,17 +87,20 @@ swarm cleanup [--older-than 24h]
 swarm serve [--port 8090] [--cors ORIGIN] [--auth-token TOKEN]
   Run HTTP API + SSE server
 
-swarm install [--user] [--interval 5m] [--uninstall]
-  Install/uninstall scheduled swarm watch execution (systemd/launchd/cron)
+swarm install [--interval 5m] [--uninstall]
+  Install/uninstall scheduled multi-project watchdog (systemd/launchd/cron)
+
+swarm watchdog run-all-once [--dry-run] [--json]
+  Execute one watchdog pass for every registered project
 ```
 
 Global flag: `--config swarm.toml` (path to config file).
 
 ## Operational Workflow (v2)
 
-1. `swarm init <project>` to scaffold project + agent assets.
+1. `swarm init <project>` to scaffold project + agent assets and verify prerequisites.
 2. Add tickets with `swarm add-ticket` and dependencies/phases.
-3. Create prompts manually or with `swarm prompts gen`.
+3. Create prompts for todo tickets (or use your ticket-prep pipeline) and validate with `swarm prep`.
 4. Start orchestration with `swarm watch`.
 5. Review phase completion via `swarm status` / `swarm status --watch`.
 6. Approve gates with `swarm go` (CLI) or `A` (TUI), unless `project.auto_approve = true`.
@@ -108,10 +119,13 @@ base_branch = "main"
 max_agents = 7
 min_ram_mb = 1024
 prompt_dir = "swarm/prompts"
+state_dir = ".local/state"
 tracker = "swarm/tracker.json"
+features_dir = "swarm/features"
 auto_approve = false
 spec_file = ""
-default_profile = ""
+require_explicit_role = true
+require_verify_cmd = true
 
 [backend]
 type = "codex-tmux"
@@ -131,6 +145,9 @@ interval = "5m"
 max_runtime = "45m"
 stale_timeout = "10m"
 max_retries = 2
+
+[guardian]
+enabled = true
 
 [integration]
 verify_cmd = ""
@@ -165,6 +182,18 @@ Interactive multi-project dashboard with live ticket controls.
 | `[` / `]` | Previous / next page |
 | `Tab` | Toggle compact mode |
 
+
+## Deterministic Completion Protocol
+
+Swarm does **not** trust Codex exit code alone. Ticket completion is determined by:
+
+1. Runtime exit artifact (`<state_dir>/runs/<ticket>/exit.json`) or backend exit detection
+2. Meaningful git diff (ignores prompt/runtime noise files)
+3. Verify gate success (`ticket.verify_cmd` or integration fallback)
+4. Guardian before-mark-done decision
+
+`swarm status` performs reconciliation in non-watch mode so dead sessions converge quickly.
+
 ## Architecture
 
 ```text
@@ -189,4 +218,19 @@ For lifecycle-oriented v2 design notes and planned `feature` command set, see `d
 go test ./... -count=1
 go build ./...
 go vet ./...
+```
+
+
+## Multi-project watchdog (recommended in OpenClaw)
+
+For OpenClaw environments running multiple swarm projects, run a single timer that calls `swarm watch --once` per project config.
+
+- dedupe by `swarm.toml` realpath (avoid duplicate runs for aliases)
+- keep each pass short (`--once`)
+- rely on completion marker (`swarm/.completion-notified`) to avoid duplicate ALL_DONE alerts
+
+If needed, reset completion notifications manually:
+
+```bash
+swarm notify reset-completion
 ```

@@ -166,3 +166,27 @@ func TestNextSpawnableLimit(t *testing.T) {
 		t.Fatalf("expected 2 ids, got %#v", ids)
 	}
 }
+
+func TestEvaluateSpawnOrderUsesPriority(t *testing.T) {
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"a": {Status: tracker.StatusTodo, Phase: 1, Priority: 10},
+		"b": {Status: tracker.StatusTodo, Phase: 1, Priority: 90},
+		"c": {Status: tracker.StatusTodo, Phase: 1, Priority: 50},
+	})
+	d := New(testCfg(3), tr)
+	d.ramOK = func(int) bool { return true }
+
+	sig, ids := d.Evaluate()
+	if sig != SignalSpawn {
+		t.Fatalf("expected spawn signal, got %q", sig)
+	}
+	want := []string{"b", "c", "a"}
+	if len(ids) != len(want) {
+		t.Fatalf("expected %d ids, got %#v", len(want), ids)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("expected order %v, got %v", want, ids)
+		}
+	}
+}

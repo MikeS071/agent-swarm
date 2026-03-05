@@ -12,6 +12,8 @@ import (
 var addTicketDeps string
 var addTicketPhase int
 var addTicketDesc string
+var addTicketRole string
+var addTicketVerifyCmd string
 
 var addTicketCmd = &cobra.Command{
 	Use:   "add-ticket <id>",
@@ -24,6 +26,12 @@ var addTicketCmd = &cobra.Command{
 		}
 		if addTicketPhase <= 0 {
 			return fmt.Errorf("--phase must be > 0")
+		}
+		if strings.TrimSpace(addTicketRole) == "" {
+			return fmt.Errorf("--role is required")
+		}
+		if strings.TrimSpace(addTicketVerifyCmd) == "" {
+			return fmt.Errorf("--verify-cmd is required")
 		}
 
 		cfg, err := config.Load(cfgFile)
@@ -41,11 +49,13 @@ var addTicketCmd = &cobra.Command{
 
 		deps := parseDeps(addTicketDeps)
 		tr.Tickets[id] = tracker.Ticket{
-			Status:  "todo",
-			Phase:   addTicketPhase,
-			Depends: deps,
-			Branch:  "feat/" + id,
-			Desc:    addTicketDesc,
+			Status:    "todo",
+			Phase:     addTicketPhase,
+			Depends:   deps,
+			Branch:    "feat/" + id,
+			Desc:      addTicketDesc,
+			Profile:   strings.TrimSpace(addTicketRole),
+			VerifyCmd: strings.TrimSpace(addTicketVerifyCmd),
 		}
 		return tr.SaveTo(trackerPath)
 	},
@@ -55,6 +65,8 @@ func init() {
 	addTicketCmd.Flags().StringVar(&addTicketDeps, "deps", "", "comma-separated dependency ticket ids")
 	addTicketCmd.Flags().IntVar(&addTicketPhase, "phase", 1, "ticket phase")
 	addTicketCmd.Flags().StringVar(&addTicketDesc, "desc", "", "ticket description")
+	addTicketCmd.Flags().StringVar(&addTicketRole, "role", "", "execution role (required)")
+	addTicketCmd.Flags().StringVar(&addTicketVerifyCmd, "verify-cmd", "", "ticket verification command (required)")
 	rootCmd.AddCommand(addTicketCmd)
 }
 

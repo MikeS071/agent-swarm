@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -18,21 +19,26 @@ type Config struct {
 	Serve         ServeConfig         `toml:"serve"`
 	Install       InstallConfig       `toml:"install"`
 	Profiles      ProfilesConfig      `toml:"profiles"`
+	Guardian      GuardianConfig      `toml:"guardian"`
 	PostBuild     PostBuildConfig     `toml:"post_build"`
+	StatusReport  StatusReportConfig  `toml:"status_report"`
+	Lifecycle     LifecycleConfig     `toml:"lifecycle"`
 }
 
 type ProjectConfig struct {
-	Name           string `toml:"name"`
-	Repo           string `toml:"repo"`
-	BaseBranch     string `toml:"base_branch"`
-	MaxAgents      int    `toml:"max_agents"`
-	MinRAMMB       int    `toml:"min_ram_mb"`
-	PromptDir      string `toml:"prompt_dir"`
-	Tracker        string `toml:"tracker"`
-	AutoApprove    bool   `toml:"auto_approve"`
-	SpecFile       string `toml:"spec_file"`
-	FeaturesDir    string `toml:"features_dir"`
-	DefaultProfile string `toml:"default_profile"`
+	Name                string `toml:"name"`
+	Repo                string `toml:"repo"`
+	StateDir            string `toml:"state_dir"`
+	BaseBranch          string `toml:"base_branch"`
+	MaxAgents           int    `toml:"max_agents"`
+	MinRAMMB            int    `toml:"min_ram_mb"`
+	PromptDir           string `toml:"prompt_dir"`
+	Tracker             string `toml:"tracker"`
+	AutoApprove         bool   `toml:"auto_approve"`
+	SpecFile            string `toml:"spec_file"`
+	FeaturesDir         string `toml:"features_dir"`
+	RequireExplicitRole bool   `toml:"require_explicit_role"`
+	RequireVerifyCmd    bool   `toml:"require_verify_cmd"`
 }
 
 type BackendConfig struct {
@@ -62,9 +68,24 @@ type PostBuildConfig struct {
 	ParallelGroups [][]string `toml:"parallel_groups"`
 }
 
+type StatusReportConfig struct {
+	Enabled          bool   `toml:"enabled"`
+	Interval         string `toml:"interval"`
+	OnlyWhenRunning  bool   `toml:"only_when_running"`
+	SendOnCompletion bool   `toml:"send_on_completion"`
+}
+
+type LifecycleConfig struct {
+	PolicyFile string `toml:"policy_file"`
+}
+
 type IntegrationConfig struct {
 	VerifyCmd   string `toml:"verify_cmd"`
 	AuditTicket string `toml:"audit_ticket"`
+}
+
+type GuardianConfig struct {
+	Enabled bool `toml:"enabled"`
 }
 
 type ServeConfig struct {
@@ -94,14 +115,17 @@ type ProfilesConfig struct {
 func Default() *Config {
 	return &Config{
 		Project: ProjectConfig{
-			Name:        "myproject",
-			Repo:        ".",
-			BaseBranch:  "main",
-			MaxAgents:   7,
-			MinRAMMB:    1024,
-			PromptDir:   "swarm/prompts",
-			Tracker:     "swarm/tracker.json",
-			FeaturesDir: "swarm/features",
+			Name:                "myproject",
+			Repo:                ".",
+			StateDir:            "",
+			BaseBranch:          "main",
+			MaxAgents:           7,
+			MinRAMMB:            1024,
+			PromptDir:           "swarm/prompts",
+			Tracker:             "swarm/tracker.json",
+			FeaturesDir:         "swarm/features",
+			RequireExplicitRole: true,
+			RequireVerifyCmd:    true,
 		},
 		Backend: BackendConfig{
 			Type:          "codex-tmux",
@@ -150,10 +174,21 @@ func Default() *Config {
 			Order:          []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
 			ParallelGroups: [][]string{{"gap", "tst"}, {"review", "sec"}, {"doc", "clean"}},
 		},
+		Guardian: GuardianConfig{Enabled: true},
+		StatusReport: StatusReportConfig{
+			Enabled:          false,
+			Interval:         "5m",
+			OnlyWhenRunning:  true,
+			SendOnCompletion: true,
+		},
+		Lifecycle: LifecycleConfig{
+			PolicyFile: ".agents/lifecycle-policy.toml",
+		},
 	}
 }
 
 func Load(path string) (*Config, error) {
+	configDir := filepath.Dir(path)
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
@@ -174,6 +209,50 @@ func Load(path string) (*Config, error) {
 	if err := toml.Unmarshal(b, cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	if strings.TrimSpace(cfg.Project.FeaturesDir) == "" {
+		cfg.Project.FeaturesDir = "swarm/features"
+	}
+	if strings.TrimSpace(cfg.StatusReport.Interval) == "" {
+		cfg.StatusReport.Interval = "5m"
+	}
+
+	// Normalize relative paths so config works regardless of current working directory.
+	cfg.Project.Repo = resolveRelative(configDir, cfg.Project.Repo)
+	if strings.TrimSpace(cfg.Project.Repo) != "" {
+		if abs, err := filepath.Abs(cfg.Project.Repo); err == nil {
+			cfg.Project.Repo = abs
+		}
+	}
+	cfg.Project.StateDir = resolveRelative(configDir, cfg.Project.StateDir)
+	repoBase := cfg.Project.Repo
+	if repoBase == "" {
+		repoBase = configDir
+	}
+	cfg.Project.PromptDir = resolveRelative(repoBase, cfg.Project.PromptDir)
+	cfg.Project.Tracker = resolveRelative(repoBase, cfg.Project.Tracker)
+	cfg.Project.FeaturesDir = resolveRelative(repoBase, cfg.Project.FeaturesDir)
+	cfg.Project.SpecFile = resolveRelative(repoBase, cfg.Project.SpecFile)
+	cfg.Lifecycle.PolicyFile = resolveRelative(repoBase, cfg.Lifecycle.PolicyFile)
+
+	// If state_dir is configured and tracker is still the legacy repo-local
+	// default path, move tracker to state dir automatically.
+	if strings.TrimSpace(cfg.Project.StateDir) != "" {
+		legacyDefault := filepath.Clean(filepath.Join(repoBase, "swarm", "tracker.json"))
+		if filepath.Clean(cfg.Project.Tracker) == legacyDefault {
+			cfg.Project.Tracker = filepath.Join(cfg.Project.StateDir, "tracker.json")
+		}
+	}
+
+	// Profile paths are relative to project root.
+	cfg.Profiles.Architect = resolveRelative(repoBase, cfg.Profiles.Architect)
+	cfg.Profiles.CodeAgent = resolveRelative(repoBase, cfg.Profiles.CodeAgent)
+	cfg.Profiles.TDDGuide = resolveRelative(repoBase, cfg.Profiles.TDDGuide)
+	cfg.Profiles.CodeReviewer = resolveRelative(repoBase, cfg.Profiles.CodeReviewer)
+	cfg.Profiles.SecurityReviewer = resolveRelative(repoBase, cfg.Profiles.SecurityReviewer)
+	cfg.Profiles.E2ERunner = resolveRelative(repoBase, cfg.Profiles.E2ERunner)
+	cfg.Profiles.DocUpdater = resolveRelative(repoBase, cfg.Profiles.DocUpdater)
+	cfg.Profiles.RefactorCleaner = resolveRelative(repoBase, cfg.Profiles.RefactorCleaner)
+	cfg.Profiles.BuildErrorResolver = resolveRelative(repoBase, cfg.Profiles.BuildErrorResolver)
 
 	if err := validate(cfg); err != nil {
 		return nil, err
@@ -191,6 +270,23 @@ func resolveSecrets(cfg *Config) {
 	}
 }
 
+func resolveRelative(base, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	if strings.HasPrefix(value, "~") {
+		return value
+	}
+	if base == "" {
+		return filepath.Clean(value)
+	}
+	return filepath.Clean(filepath.Join(base, value))
+}
+
 func validate(cfg *Config) error {
 	if strings.TrimSpace(cfg.Project.Name) == "" {
 		return fmt.Errorf("project.name is required")
@@ -206,9 +302,6 @@ func validate(cfg *Config) error {
 	}
 	if strings.TrimSpace(cfg.Project.Tracker) == "" {
 		return fmt.Errorf("project.tracker is required")
-	}
-	if strings.TrimSpace(cfg.Project.FeaturesDir) == "" {
-		return fmt.Errorf("project.features_dir is required")
 	}
 	if cfg.Project.MaxAgents <= 0 {
 		return fmt.Errorf("project.max_agents must be > 0")

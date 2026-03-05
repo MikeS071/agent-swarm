@@ -17,15 +17,17 @@ type AgentBackend interface {
 
 // SpawnConfig configures an agent run.
 type SpawnConfig struct {
-	TicketID   string
-	Branch     string
-	WorkDir    string
-	ProjectDir string
-	PromptFile string
-	Model      string
-	Effort     string
-	ExtraFlags   []string
-	ProjectName  string
+	TicketID    string
+	Branch      string
+	WorkDir     string
+	ProjectDir  string
+	PromptFile  string
+	Model       string
+	Effort      string
+	ExtraFlags  []string
+	ProjectName string
+	SpawnFile   string
+	ExitFile    string
 }
 
 // AgentHandle identifies a spawned agent session.

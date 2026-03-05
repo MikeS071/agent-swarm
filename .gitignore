@@ -18,3 +18,23 @@ agent-swarm
 !.decapod/generated/specs/
 !.decapod/generated/specs/*.md
 !.decapod/generated/specs/.manifest.json
+
+# swarm runtime artifacts
+.codex-prompt.md
+.agent-context/
+
+# runtime state (outside git)
+.local/state/
+swarm/tracker.json
+swarm/tracker.json.lock
+swarm/events.jsonl
+swarm/rollups/
+swarm/watchdog.log
+
+# local project runtime/scratch
+.local/
+
+# Swarm runtime artifacts
+swarm/logs/
+swarm/.completion-notified
+swarm/.telemetry-maint-last

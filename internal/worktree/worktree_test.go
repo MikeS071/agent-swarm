@@ -164,3 +164,52 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+func TestHasCommitsIgnoresCodexPromptOnlyCommit(t *testing.T) {
+	repo := initRepo(t)
+	m := New(repo, "", "main")
+	wtPath, err := m.Create("sw-05", "feat/sw-05")
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+
+	writeFile(t, filepath.Join(wtPath, ".codex-prompt.md"), "prompt\n")
+	runGit(t, wtPath, "add", ".codex-prompt.md")
+	runGit(t, wtPath, "commit", "-m", "prompt only")
+
+	has, sha, err := m.HasCommits("sw-05", "main")
+	if err != nil {
+		t.Fatalf("has commits: %v", err)
+	}
+	if has {
+		t.Fatalf("expected codex-prompt-only commit to be ignored, got has=true sha=%q", sha)
+	}
+}
+
+func TestHasCommitsDoesNotAutoRescueUncommittedPromptOnly(t *testing.T) {
+	repo := initRepo(t)
+	m := New(repo, "", "main")
+	wtPath, err := m.Create("sw-06", "feat/sw-06")
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+
+	writeFile(t, filepath.Join(wtPath, ".codex-prompt.md"), "prompt\n")
+	statusBefore := runGit(t, wtPath, "status", "--porcelain")
+	if strings.TrimSpace(statusBefore) == "" {
+		t.Fatalf("expected uncommitted prompt file before check")
+	}
+
+	has, sha, err := m.HasCommits("sw-06", "main")
+	if err != nil {
+		t.Fatalf("has commits: %v", err)
+	}
+	if has {
+		t.Fatalf("expected no commits, got has=true sha=%q", sha)
+	}
+
+	statusAfter := runGit(t, wtPath, "status", "--porcelain")
+	if strings.TrimSpace(statusAfter) == "" {
+		t.Fatalf("expected uncommitted prompt file to remain (no auto-rescue commit)")
+	}
+}
