@@ -18,23 +18,34 @@ type Tracker struct {
 }
 
 type Ticket struct {
-	Status         string   `json:"status"`
-	Phase          int      `json:"phase"`
-	Depends        []string `json:"depends"`
-	Type           string   `json:"type,omitempty"`
-	Feature        string   `json:"feature,omitempty"`
-	RunID          string   `json:"run_id,omitempty"`
-	Branch         string   `json:"branch,omitempty"`
-	Desc           string   `json:"desc,omitempty"`
-	Profile        string   `json:"profile,omitempty"`
-	VerifyCmd      string   `json:"verify_cmd,omitempty"`
-	Priority       int      `json:"priority,omitempty"`
-	SHA            string   `json:"sha,omitempty"`
-	StartedAt      string   `json:"startedAt,omitempty"`
-	FinishedAt     string   `json:"finishedAt,omitempty"`
-	SessionName    string   `json:"session_name,omitempty"`
-	SessionBackend string   `json:"session_backend,omitempty"`
-	SessionModel   string   `json:"session_model,omitempty"`
+	Status              string   `json:"status"`
+	Phase               int      `json:"phase"`
+	Depends             []string `json:"depends"`
+	ID                  string   `json:"id,omitempty"`
+	Type                string   `json:"type,omitempty"`
+	RunID               string   `json:"run_id,omitempty"`
+	Role                string   `json:"role,omitempty"`
+	Feature             string   `json:"feature,omitempty"`
+	Branch              string   `json:"branch,omitempty"`
+	Desc                string   `json:"desc,omitempty"`
+	Objective           string   `json:"objective,omitempty"`
+	ScopeIn             []string `json:"scope_in,omitempty"`
+	ScopeOut            []string `json:"scope_out,omitempty"`
+	FilesToTouch        []string `json:"files_to_touch,omitempty"`
+	ReferenceFiles      []string `json:"reference_files,omitempty"`
+	ImplementationSteps []string `json:"implementation_steps,omitempty"`
+	TestsToAddOrUpdate  []string `json:"tests_to_add_or_update,omitempty"`
+	VerifyCmd           string   `json:"verify_cmd,omitempty"`
+	AcceptanceCriteria  []string `json:"acceptance_criteria,omitempty"`
+	Constraints         []string `json:"constraints,omitempty"`
+	Profile             string   `json:"profile,omitempty"`
+	Priority            int      `json:"priority,omitempty"`
+	SHA                 string   `json:"sha,omitempty"`
+	StartedAt           string   `json:"startedAt,omitempty"`
+	FinishedAt          string   `json:"finishedAt,omitempty"`
+	SessionName         string   `json:"session_name,omitempty"`
+	SessionBackend      string   `json:"session_backend,omitempty"`
+	SessionModel        string   `json:"session_model,omitempty"`
 }
 
 type Stats struct {
@@ -55,6 +66,10 @@ var validStatuses = map[string]struct{}{
 }
 
 func Load(path string) (*Tracker, error) {
+	return LoadWithOptions(path, ValidationOptions{})
+}
+
+func LoadWithOptions(path string, opts ValidationOptions) (*Tracker, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read tracker %s: %w", path, err)
@@ -65,6 +80,9 @@ func Load(path string) (*Tracker, error) {
 	}
 	if t.Tickets == nil {
 		t.Tickets = map[string]Ticket{}
+	}
+	if err := t.Validate(opts); err != nil {
+		return nil, fmt.Errorf("validate tracker %s: %w", path, err)
 	}
 	t.filePath = path
 	return &t, nil
@@ -78,11 +96,18 @@ func (t *Tracker) Save() error {
 }
 
 func (t *Tracker) SaveTo(path string) error {
+	return t.SaveToWithOptions(path, ValidationOptions{})
+}
+
+func (t *Tracker) SaveToWithOptions(path string, opts ValidationOptions) error {
 	if t == nil {
 		return fmt.Errorf("tracker is nil")
 	}
 	if t.Tickets == nil {
 		t.Tickets = map[string]Ticket{}
+	}
+	if err := t.Validate(opts); err != nil {
+		return fmt.Errorf("validate tracker %s: %w", path, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir tracker dir: %w", err)
