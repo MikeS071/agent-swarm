@@ -237,7 +237,10 @@ func (d *Dispatcher) spawnableInPhase(phase int) []string {
 	}
 
 	tickets := d.tracker.TicketsByPhase(phase)
-	ids := make([]string, 0, len(tickets))
+	featureIDs := make([]string, 0, len(tickets))
+	integrationIDs := make([]string, 0, len(tickets))
+	postBuildIDs := make([]string, 0, len(tickets))
+	otherIDs := make([]string, 0, len(tickets))
 	for id, tk := range tickets {
 		if tk.Status != tracker.StatusTodo {
 			continue
@@ -259,9 +262,35 @@ func (d *Dispatcher) spawnableInPhase(phase int) []string {
 			}
 		}
 		if ready {
-			ids = append(ids, id)
+			switch d.dispatchCategory(tk) {
+			case tracker.TicketTypeFeature:
+				featureIDs = append(featureIDs, id)
+			case tracker.TicketTypeIntegration:
+				integrationIDs = append(integrationIDs, id)
+			case tracker.TicketTypePostBuild:
+				postBuildIDs = append(postBuildIDs, id)
+			default:
+				otherIDs = append(otherIDs, id)
+			}
 		}
 	}
+	sortByPriority(featureIDs, tickets)
+	sortByPriority(integrationIDs, tickets)
+	sortByPriority(postBuildIDs, tickets)
+	sortByPriority(otherIDs, tickets)
+	if len(featureIDs) > 0 {
+		return featureIDs
+	}
+	if len(integrationIDs) > 0 {
+		return integrationIDs
+	}
+	if len(postBuildIDs) > 0 {
+		return postBuildIDs
+	}
+	return otherIDs
+}
+
+func sortByPriority(ids []string, tickets map[string]tracker.Ticket) {
 	sort.Slice(ids, func(i, j int) bool {
 		pi := tickets[ids[i]].Priority
 		pj := tickets[ids[j]].Priority
@@ -270,7 +299,30 @@ func (d *Dispatcher) spawnableInPhase(phase int) []string {
 		}
 		return pi > pj
 	})
-	return ids
+}
+
+func (d *Dispatcher) dispatchCategory(tk tracker.Ticket) string {
+	typ := strings.TrimSpace(strings.ToLower(tk.Type))
+	switch typ {
+	case "", tracker.TicketTypeFeature, "build":
+		return tracker.TicketTypeFeature
+	case tracker.TicketTypeIntegration, "int":
+		return tracker.TicketTypeIntegration
+	case tracker.TicketTypePostBuild:
+		return tracker.TicketTypePostBuild
+	}
+
+	if d != nil && d.config != nil {
+		for _, step := range d.config.PostBuild.Order {
+			if typ == strings.TrimSpace(strings.ToLower(step)) {
+				if typ == "int" {
+					return tracker.TicketTypeIntegration
+				}
+				return tracker.TicketTypePostBuild
+			}
+		}
+	}
+	return tracker.TicketTypeFeature
 }
 
 func hasMinRAM(minMB int) bool {

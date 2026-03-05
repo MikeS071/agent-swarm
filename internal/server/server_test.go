@@ -111,6 +111,45 @@ func TestTicketDoneEndpoint(t *testing.T) {
 	}
 }
 
+func TestProjectStatusIncludesRunScopeState(t *testing.T) {
+	s := newTestServer(t)
+	s.tracker.CurrentRunID = "run-1"
+	s.tracker.Runs = map[string]tracker.RunState{
+		"run-1": {
+			Integration: tracker.StatusDone,
+			PostBuild: map[string]string{
+				"review": tracker.StatusRunning,
+			},
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/test/status", nil)
+	s.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if payload["current_run_id"] != "run-1" {
+		t.Fatalf("current_run_id=%v want run-1", payload["current_run_id"])
+	}
+	runs, ok := payload["runs"].(map[string]any)
+	if !ok {
+		t.Fatalf("runs type=%T want object", payload["runs"])
+	}
+	run, ok := runs["run-1"].(map[string]any)
+	if !ok {
+		t.Fatalf("runs.run-1 type=%T want object", runs["run-1"])
+	}
+	if run["integration"] != tracker.StatusDone {
+		t.Fatalf("integration=%v want %s", run["integration"], tracker.StatusDone)
+	}
+}
+
 func TestWatchdogEndpoints(t *testing.T) {
 	s := newTestServer(t)
 

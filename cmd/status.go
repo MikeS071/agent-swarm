@@ -96,17 +96,21 @@ func printStatusJSON(tr *tracker.Tracker) error {
 	}
 
 	payload := struct {
-		Project     string                    `json:"project"`
-		ActivePhase int                       `json:"activePhase"`
-		Stats       tracker.Stats             `json:"stats"`
-		Spawnable   []string                  `json:"spawnable"`
-		Tickets     map[string]tracker.Ticket `json:"tickets"`
+		Project      string                      `json:"project"`
+		ActivePhase  int                         `json:"activePhase"`
+		CurrentRunID string                      `json:"currentRunId,omitempty"`
+		Runs         map[string]tracker.RunState `json:"runs,omitempty"`
+		Stats        tracker.Stats               `json:"stats"`
+		Spawnable    []string                    `json:"spawnable"`
+		Tickets      map[string]tracker.Ticket   `json:"tickets"`
 	}{
-		Project:     tr.Project,
-		ActivePhase: tr.ActivePhase(),
-		Stats:       tr.Stats(),
-		Spawnable:   tr.GetSpawnable(),
-		Tickets:     tickets,
+		Project:      tr.Project,
+		ActivePhase:  tr.ActivePhase(),
+		CurrentRunID: strings.TrimSpace(tr.CurrentRunID),
+		Runs:         tr.Runs,
+		Stats:        tr.Stats(),
+		Spawnable:    tr.GetSpawnable(),
+		Tickets:      tickets,
 	}
 	enc := json.NewEncoder(color.Output)
 	enc.SetIndent("", "  ")
