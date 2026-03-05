@@ -2039,10 +2039,52 @@ func (w *Watchdog) ensurePostBuildIntegratedBase(ctx context.Context) (string, e
 	return base, nil
 }
 
+func integratedDependencySet(tr *tracker.Tracker, stepSet map[string]struct{}) map[string]struct{} {
+	out := map[string]struct{}{}
+	if tr == nil {
+		return out
+	}
+	var visit func(string)
+	visit = func(id string) {
+		if _, seen := out[id]; seen {
+			return
+		}
+		tk, ok := tr.Tickets[id]
+		if !ok {
+			return
+		}
+		typeName := strings.TrimSpace(tk.Type)
+		if _, isPost := stepSet[typeName]; isPost {
+			return
+		}
+		out[id] = struct{}{}
+		for _, dep := range tk.Depends {
+			visit(strings.TrimSpace(dep))
+		}
+	}
+
+	for id, tk := range tr.Tickets {
+		if tk.Status != tracker.StatusDone {
+			continue
+		}
+		if strings.TrimSpace(tk.Type) != "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(id), "int-") {
+			continue
+		}
+		for _, dep := range tk.Depends {
+			visit(strings.TrimSpace(dep))
+		}
+	}
+	return out
+}
+
 func (w *Watchdog) doneBranchesForPostBuildBaseline(stepSet map[string]struct{}) ([]string, string) {
 	if w == nil || w.tracker == nil {
 		return nil, ""
 	}
+	integratedDeps := integratedDependencySet(w.tracker, stepSet)
 	order := w.tracker.DependencyOrder()
 	if len(order) == 0 {
 		for id := range w.tracker.Tickets {
@@ -2060,6 +2102,9 @@ func (w *Watchdog) doneBranchesForPostBuildBaseline(stepSet map[string]struct{})
 			continue
 		}
 		if tk.Status != tracker.StatusDone {
+			continue
+		}
+		if _, skip := integratedDeps[id]; skip {
 			continue
 		}
 		branch := strings.TrimSpace(tk.Branch)
