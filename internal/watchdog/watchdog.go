@@ -20,6 +20,7 @@ import (
 	"github.com/MikeS071/agent-swarm/internal/config"
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
 	"github.com/MikeS071/agent-swarm/internal/guardian"
+	guardianevidence "github.com/MikeS071/agent-swarm/internal/guardian/evidence"
 	"github.com/MikeS071/agent-swarm/internal/lifecycle"
 	"github.com/MikeS071/agent-swarm/internal/notify"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
@@ -1667,6 +1668,20 @@ func (w *Watchdog) guardianCheck(ctx context.Context, ev guardian.Event, ticketI
 	}
 	if dec.Result == "" {
 		dec.Result = guardian.ResultAllow
+	}
+	if strings.TrimSpace(dec.EvidencePath) == "" && (dec.Result == guardian.ResultBlock || dec.Result == guardian.ResultWarn) {
+		if p, wErr := guardianevidence.WriteDecisionEvidence(filepath.Join(w.runtimeStateRoot(), "guardian"), guardianevidence.DecisionEvidence{
+			Event:    string(ev),
+			TicketID: ticketID,
+			Phase:    tk.Phase,
+			RunID:    strings.TrimSpace(tk.RunID),
+			Result:   string(dec.Result),
+			RuleID:   strings.TrimSpace(dec.RuleID),
+			Reason:   strings.TrimSpace(dec.Reason),
+			Context:  ctxMap,
+		}); wErr == nil {
+			dec.EvidencePath = p
+		}
 	}
 	return dec, nil
 }
