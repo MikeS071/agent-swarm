@@ -2,39 +2,39 @@
   "findings": [
     {
       "severity": "high",
-      "category": "correctness",
-      "file": "internal/watchdog/watchdog.go",
-      "line": 1873,
-      "title": "Out-of-scope implementation changes for gap-run feature",
-      "description": "The diff from `feat/int-run..HEAD` changes runtime behavior in `internal/watchdog/*` and `internal/version/*`, but this task's scope is post-build gap analysis output for feature `run`. These code changes are outside the declared scope and violate the feature contract.",
-      "suggested_fix": "Revert non-scope code changes and implement only the required gap-analysis deliverable files for `swarm/features/run`."
+      "category": "documentation",
+      "file": "swarm/features/run/gap-report.md",
+      "line": 1,
+      "title": "Required review input artifact is missing",
+      "description": "The review spec lists `swarm/features/run/gap-report.md` as a required input, but the file is absent in this worktree. Without it, scope and requirement-coverage cross-checks cannot be fully validated.",
+      "suggested_fix": "Add `swarm/features/run/gap-report.md` from dependency `gap-run` before final approval."
     },
     {
       "severity": "high",
       "category": "documentation",
-      "file": "swarm/features/run/gap-report.md",
+      "file": "swarm/features/run/test-report.md",
       "line": 1,
-      "title": "Required deliverable is missing",
-      "description": "The mandatory artifact `swarm/features/run/gap-report.md` does not exist, so the feature objective output is incomplete.",
-      "suggested_fix": "Create `swarm/features/run/gap-report.md` with confirmed complete items, identified gaps (with severity and rationale), and concrete follow-up tickets."
+      "title": "Required test evidence artifact is missing",
+      "description": "The review spec requires `swarm/features/run/test-report.md`, but it is missing. This blocks evidence-based validation of intended test coverage for the merged feature changes.",
+      "suggested_fix": "Add `swarm/features/run/test-report.md` from dependency `tst-run` before final approval."
     },
     {
       "severity": "high",
       "category": "style",
       "file": "internal/watchdog/watchdog.go",
-      "line": 1,
-      "title": "Modified file exceeds 800-line limit",
-      "description": "`internal/watchdog/watchdog.go` was modified and is 2571 lines long, violating the review rule that no file should exceed 800 lines.",
-      "suggested_fix": "Refactor watchdog responsibilities into smaller focused modules and move new logic into a dedicated file under 800 lines."
+      "line": 1873,
+      "title": "Change adds logic to a file exceeding 800 lines",
+      "description": "`internal/watchdog/watchdog.go` is 2571 lines and this change introduces additional orchestration logic into it. Per review policy, files over 800 lines are a blocking maintainability risk because they reduce locality and increase regression surface.",
+      "suggested_fix": "Extract post-build gate evaluation and run-scope ticket generation helpers into smaller focused files/modules and keep `watchdog.go` below the size threshold."
     },
     {
       "severity": "high",
       "category": "style",
       "file": "internal/watchdog/watchdog_test.go",
-      "line": 1,
-      "title": "Modified test file exceeds 800-line limit",
-      "description": "`internal/watchdog/watchdog_test.go` was modified and is 1465 lines long, violating the 800-line file-size constraint.",
-      "suggested_fix": "Split tests into feature-focused files (for example: post-build generation, retry behavior, routing) and keep each file below 800 lines."
+      "line": 630,
+      "title": "Change extends test file already over 800 lines",
+      "description": "`internal/watchdog/watchdog_test.go` is 1465 lines and the new test increases concentration in an already oversized file. This makes future test maintenance and fault isolation harder.",
+      "suggested_fix": "Split watchdog post-build tests into focused `_test.go` files by behavior area (e.g., post-build gating, spawn/idempotency, lifecycle integration)."
     }
   ],
   "verdict": "BLOCK",
