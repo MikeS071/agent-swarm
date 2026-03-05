@@ -28,6 +28,7 @@ type Ticket struct {
 	Desc           string   `json:"desc,omitempty"`
 	Profile        string   `json:"profile,omitempty"`
 	VerifyCmd      string   `json:"verify_cmd,omitempty"`
+	RetryCount     int      `json:"retry_count,omitempty"`
 	Priority       int      `json:"priority,omitempty"`
 	SHA            string   `json:"sha,omitempty"`
 	StartedAt      string   `json:"startedAt,omitempty"`
@@ -316,6 +317,7 @@ func (t *Tracker) MarkDone(id, sha string) error {
 	}
 	tk.Status = StatusDone
 	tk.SHA = sha
+	tk.RetryCount = 0
 	t.Tickets[id] = tk
 	return nil
 }

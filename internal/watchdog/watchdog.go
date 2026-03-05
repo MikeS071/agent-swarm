@@ -148,7 +148,6 @@ type Watchdog struct {
 	backendMu      sync.Mutex
 
 	dryRun         bool
-	retries        map[string]int
 	spawnErrors    map[string]int
 	stuckAlerts    map[string]bool
 	gateNoticed    bool
@@ -198,7 +197,6 @@ func New(
 		events:       NewEventLog(eventsPath),
 		guardian:     guardian.NoopEvaluator{},
 		backendCache: cache,
-		retries:      map[string]int{},
 		spawnErrors:  map[string]int{},
 		stuckAlerts:  map[string]bool{},
 	}
@@ -276,8 +274,9 @@ func (w *Watchdog) ReconcileRunning(ctx context.Context) error {
 				continue
 			}
 			if ok, _ := w.verifyTicket(ticketID, tk); ok {
+				tk.RetryCount = 0
+				w.tracker.Tickets[ticketID] = tk
 				_, _ = w.dispatcher.MarkDone(ticketID, sha)
-				delete(w.retries, ticketID)
 				d := map[string]any{"sha": sha}
 				if hasExitMarker {
 					d["process_exit_code"] = exitMeta.ProcessExitCode
@@ -401,14 +400,18 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					continue
 				}
 				if ok, vErr := w.verifyTicket(ticketID, tk); !ok {
-					w.retries[ticketID]++
-					attempt := w.retries[ticketID]
+					tk.RetryCount++
+					attempt := tk.RetryCount
+					w.tracker.Tickets[ticketID] = tk
 					if attempt < w.maxRetries() {
 						data := map[string]any{"attempt": attempt, "error": errString(vErr)}
 						if hasExitMarker {
 							data["process_exit_code"] = exitMeta.ProcessExitCode
 						}
 						_ = w.appendEvent("verify_failed_respawn", ticketID, data)
+						if err := w.saveTracker(); err != nil {
+							w.log("WARN: saveTracker before verify respawn (%s): %v", ticketID, err)
+						}
 						if err := w.SpawnTicket(ctx, ticketID); err != nil {
 							w.log("WARN: respawn after verify fail (%s): %v", ticketID, err)
 						}
@@ -424,8 +427,9 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					_ = w.notifier.Alert(ctx, fmt.Sprintf("ticket %s failed verification", ticketID))
 					continue
 				}
+				tk.RetryCount = 0
+				w.tracker.Tickets[ticketID] = tk
 				sig, spawnable := w.dispatcher.MarkDone(ticketID, sha)
-				delete(w.retries, ticketID)
 				if created, err := w.autoCreateFixTickets(ticketID); err != nil {
 					w.log("WARN: autoCreateFixTickets(%s): %v", ticketID, err)
 				} else if created > 0 {
@@ -454,8 +458,9 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				continue
 			}
 
-			w.retries[ticketID]++
-			attempt := w.retries[ticketID]
+			tk.RetryCount++
+			attempt := tk.RetryCount
+			w.tracker.Tickets[ticketID] = tk
 			if attempt < w.maxRetries() {
 				if w.dryRun {
 					_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would respawn %s (attempt %d)", ticketID, attempt))
@@ -467,6 +472,9 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				}
 				if err := w.appendEvent("respawn", ticketID, data); err != nil {
 					w.log("WARN: appendEvent(respawn, %s): %v", ticketID, err)
+				}
+				if err := w.saveTracker(); err != nil {
+					w.log("WARN: saveTracker before respawn (%s): %v", ticketID, err)
 				}
 				if err := w.SpawnTicket(ctx, ticketID); err != nil {
 					w.log("WARN: respawn SpawnTicket(%s): %v", ticketID, err)
@@ -1091,7 +1099,7 @@ func (w *Watchdog) assemblePromptForTicket(ticketID string, tk tracker.Ticket, t
 
 	// Layer 5: footer
 	parts = append(parts, loadPromptFooter(w.config.Project.PromptDir))
-	if suffix := reviewOutputSuffix(profileName); len(suffix) > 0 {
+	if suffix := reviewOutputSuffix(profileName, ticketID, tk); len(suffix) > 0 {
 		parts = append(parts, suffix)
 	}
 
@@ -1239,13 +1247,23 @@ func isCodexCompatibleModel(model string) bool {
 	return strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3") || strings.HasPrefix(m, "o4")
 }
 
-func reviewOutputSuffix(profileName string) []byte {
+func reviewOutputSuffix(profileName, ticketID string, tk tracker.Ticket) []byte {
+	feature := strings.TrimSpace(tk.Feature)
+	if feature == "" {
+		if parsed, ok := parsePostBuildFeatureFromTicketID(ticketID); ok {
+			feature = parsed
+		}
+	}
+	if feature == "" {
+		feature = "<feature>"
+	}
+
 	path := ""
 	switch strings.TrimSpace(profileName) {
 	case "code-reviewer":
-		path = "swarm/features/<feature>/review-report.json"
+		path = filepath.ToSlash(filepath.Join("swarm", "features", feature, "review-report.json"))
 	case "security-reviewer":
-		path = "swarm/features/<feature>/sec-report.json"
+		path = filepath.ToSlash(filepath.Join("swarm", "features", feature, "sec-report.json"))
 	default:
 		return nil
 	}
@@ -1277,6 +1295,22 @@ Verdict: BLOCK if any critical or high. WARN if only medium/low. PASS if clean.
 
 After writing the JSON, commit and push it.
 `, path))
+}
+
+func parsePostBuildFeatureFromTicketID(ticketID string) (string, bool) {
+	ticketID = strings.TrimSpace(ticketID)
+	if ticketID == "" {
+		return "", false
+	}
+	i := strings.Index(ticketID, "-")
+	if i <= 0 || i+1 >= len(ticketID) {
+		return "", false
+	}
+	feature := strings.TrimSpace(ticketID[i+1:])
+	if feature == "" {
+		return "", false
+	}
+	return feature, true
 }
 
 // joinParts concatenates byte slices with double-newline separators.
@@ -1978,7 +2012,7 @@ func (w *Watchdog) createPostBuildTicketsForFeature(
 			if err := os.MkdirAll(promptDir, 0o755); err == nil {
 				promptPath := filepath.Join(promptDir, id+".md")
 				if _, statErr := os.Stat(promptPath); os.IsNotExist(statErr) {
-					_ = os.WriteFile(promptPath, []byte(buildPostBuildPrompt(id, step, feature, tk.Depends)), 0o644)
+					_ = os.WriteFile(promptPath, []byte(buildPostBuildPrompt(id, step, feature, tk.Depends, verifyCmd)), 0o644)
 				}
 			}
 			fs.PostBuildStepsSet[step] = true
@@ -2095,12 +2129,55 @@ func buildPostBuildStages(order []string, parallelGroups [][]string) [][]string 
 	return stages
 }
 
-func buildPostBuildPrompt(ticketID, step, feature string, depends []string) string {
+func buildPostBuildPrompt(ticketID, step, feature string, depends []string, verifyCmd string) string {
 	depText := "none"
 	if len(depends) > 0 {
 		depText = strings.Join(depends, ", ")
 	}
-	return fmt.Sprintf(`# %s
+	verifyText := "Follow the project verify command and include evidence in commit message."
+	if strings.TrimSpace(verifyCmd) != "" {
+		verifyText = verifyCmd
+	}
+
+	switch strings.TrimSpace(step) {
+	case "review":
+		reportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "review-report.json"))
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run post-build step %q for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Review merged TP changes for feature %s
+- READ-ONLY review; do not modify source files
+- Produce a structured findings report at %s
+
+## Verify
+%s
+`, ticketID, step, feature, depText, feature, reportPath, verifyText)
+	case "sec":
+		reportPath := filepath.ToSlash(filepath.Join("swarm", "features", feature, "sec-report.json"))
+		return fmt.Sprintf(`# %s
+
+## Objective
+Run post-build step %q for feature %q.
+
+## Dependencies
+%s
+
+## Scope
+- Perform security review of merged TP changes for feature %s
+- READ-ONLY review; do not modify source files
+- Produce a structured findings report at %s
+
+## Verify
+%s
+`, ticketID, step, feature, depText, feature, reportPath, verifyText)
+	default:
+		return fmt.Sprintf(`# %s
 
 ## Objective
 Run post-build step %q for feature %q.
@@ -2114,8 +2191,9 @@ Run post-build step %q for feature %q.
 - Do not modify unrelated features
 
 ## Verify
-Follow the project verify command and include evidence in commit message.
-`, ticketID, step, feature, depText, step, feature)
+%s
+`, ticketID, step, feature, depText, step, feature, verifyText)
+	}
 }
 
 func postBuildProfile(step string) string {

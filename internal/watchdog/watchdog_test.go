@@ -173,6 +173,9 @@ func TestRunOnceRespawnThenFailOnSecondNoCommitExit(t *testing.T) {
 	if got := tr.Tickets["sw-01"].Status; got != tracker.StatusRunning {
 		t.Fatalf("status after first run = %q, want running", got)
 	}
+	if got := tr.Tickets["sw-01"].RetryCount; got != 1 {
+		t.Fatalf("retry_count after first run = %d, want 1", got)
+	}
 
 	if err := w.RunOnce(context.Background()); err != nil {
 		t.Fatalf("second run once: %v", err)
@@ -181,6 +184,68 @@ func TestRunOnceRespawnThenFailOnSecondNoCommitExit(t *testing.T) {
 		t.Fatalf("status after second run = %q, want failed", got)
 	}
 	if len(n.alerts) == 0 {
+		t.Fatalf("expected alert for failed ticket")
+	}
+}
+
+func TestRunOnceRetryCountPersistsAcrossWatchdogInstances(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	if _, err := wtMgr.Create("sw-01", "feat/sw-01"); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	writeFile(t, filepath.Join(promptDir, "sw-01.md"), "# sw-01\n")
+
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-01": {Status: tracker.StatusRunning, Phase: 1, Branch: "feat/sw-01"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Watchdog: config.WatchdogConfig{MaxRetries: 2},
+		Backend:  config.BackendConfig{Model: "m", Effort: "e"},
+	}
+
+	be1 := &fakeBackend{exited: map[string]bool{"swarm-sw-01": true}}
+	w1 := New(cfg, tr, dispatcher.New(cfg, tr), be1, wtMgr, &fakeNotifier{})
+	if err := w1.RunOnce(context.Background()); err != nil {
+		t.Fatalf("first watchdog run once: %v", err)
+	}
+	if got := tr.Tickets["sw-01"].RetryCount; got != 1 {
+		t.Fatalf("retry_count after first watchdog = %d, want 1", got)
+	}
+
+	// Simulate oneshot timer restart: new watchdog instance, tracker reloaded from disk.
+	tr2, err := tracker.Load(trackerPath)
+	if err != nil {
+		t.Fatalf("reload tracker: %v", err)
+	}
+	be2 := &fakeBackend{exited: map[string]bool{"swarm-sw-01": true}}
+	n2 := &fakeNotifier{}
+	w2 := New(cfg, tr2, dispatcher.New(cfg, tr2), be2, wtMgr, n2)
+	if err := w2.RunOnce(context.Background()); err != nil {
+		t.Fatalf("second watchdog run once: %v", err)
+	}
+
+	if got := tr2.Tickets["sw-01"].Status; got != tracker.StatusFailed {
+		t.Fatalf("status after second watchdog = %q, want failed", got)
+	}
+	if got := tr2.Tickets["sw-01"].RetryCount; got != 2 {
+		t.Fatalf("retry_count after second watchdog = %d, want 2", got)
+	}
+	if len(n2.alerts) == 0 {
 		t.Fatalf("expected alert for failed ticket")
 	}
 }
@@ -352,6 +417,17 @@ func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 			t.Fatalf("%s verify_cmd = %q, want %q", tc.id, tk.VerifyCmd, "go test ./...")
 		}
 		assertSameDeps(t, tc.id, tk.Depends, tc.depends)
+	}
+
+	reviewPrompt, err := os.ReadFile(filepath.Join(promptDir, "review-cch.md"))
+	if err != nil {
+		t.Fatalf("read review prompt: %v", err)
+	}
+	if !strings.Contains(string(reviewPrompt), "swarm/features/cch/review-report.json") {
+		t.Fatalf("review prompt missing concrete report path:\n%s", string(reviewPrompt))
+	}
+	if !strings.Contains(string(reviewPrompt), "go test ./...") {
+		t.Fatalf("review prompt missing verify command:\n%s", string(reviewPrompt))
 	}
 
 	if len(be.spawnCalls) != 1 || be.spawnCalls[0].TicketID != "int-cch" {
@@ -1124,13 +1200,13 @@ func TestAssemblePromptReviewOutputSuffix(t *testing.T) {
 			name:          "code reviewer ticket profile",
 			ticketProfile: "code-reviewer",
 			wantSuffix:    true,
-			wantPath:      "swarm/features/<feature>/review-report.json",
+			wantPath:      "swarm/features/tp/review-report.json",
 		},
 		{
 			name:          "security reviewer ticket profile",
 			ticketProfile: "security-reviewer",
 			wantSuffix:    true,
-			wantPath:      "swarm/features/<feature>/sec-report.json",
+			wantPath:      "swarm/features/tp/sec-report.json",
 		},
 		{
 			name:          "non-review profile",
@@ -1155,7 +1231,11 @@ func TestAssemblePromptReviewOutputSuffix(t *testing.T) {
 			}
 			w := &Watchdog{config: cfg}
 
-			out := string(w.assemblePrompt(tracker.Ticket{Profile: tc.ticketProfile}, []byte("task")))
+			ticket := tracker.Ticket{Profile: tc.ticketProfile, Feature: "tp", Type: "review"}
+			if tc.ticketProfile == "security-reviewer" {
+				ticket.Type = "sec"
+			}
+			out := string(w.assemblePromptForTicket(ticket.Type+"-tp", ticket, []byte("task")))
 
 			hasHeader := strings.Contains(out, "## OUTPUT FORMAT (mandatory)")
 			if hasHeader != tc.wantSuffix {
