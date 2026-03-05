@@ -2,62 +2,54 @@ package version
 
 import "testing"
 
-func TestGetReturnsDevWhenUnset(t *testing.T) {
-	old := ver
-	ver = ""
-	defer func() { ver = old }()
+func TestGetPrefersLdflagsValue(t *testing.T) {
+	oldVer := ver
+	oldEmbedded := embeddedVersion
+	ver = "2026.03.05-11"
+	embeddedVersion = "2026.03.05-9"
+	defer func() {
+		ver = oldVer
+		embeddedVersion = oldEmbedded
+	}()
 
-	v := Get()
-	// Without ldflags, Get() returns either the module version or "dev"
-	if v == "" {
-		t.Fatal("Get() returned empty string")
+	if got := Get(); got != "2026.03.05-11" {
+		t.Fatalf("expected ldflags version, got %s", got)
 	}
 }
 
-func TestGetReturnsLdflagsValue(t *testing.T) {
-	old := ver
-	ver = "2026.03.05-1"
-	defer func() { ver = old }()
+func TestGetUsesEmbeddedVersionWhenLdflagsUnset(t *testing.T) {
+	oldVer := ver
+	oldEmbedded := embeddedVersion
+	ver = ""
+	embeddedVersion = "2026.03.05-9"
+	defer func() {
+		ver = oldVer
+		embeddedVersion = oldEmbedded
+	}()
 
-	if got := Get(); got != "2026.03.05-1" {
-		t.Fatalf("expected 2026.03.05-1, got %s", got)
+	if got := Get(); got != "2026.03.05-9" {
+		t.Fatalf("expected embedded version, got %s", got)
+	}
+}
+
+func TestNormalizeRejectsPseudoVersion(t *testing.T) {
+	in := "v0.0.0-20260305082248-0167d23c1333+dirty"
+	if got := normalize(in); got != "" {
+		t.Fatalf("expected pseudo version to be rejected, got %q", got)
 	}
 }
 
 func TestStringFormatsWithPrefix(t *testing.T) {
-	old := ver
-	ver = "2026.03.05-1"
-	defer func() { ver = old }()
-
-	if got := String(); got != "v2026.03.05-1" {
-		t.Fatalf("expected v2026.03.05-1, got %s", got)
-	}
-}
-
-func TestStringDevBuild(t *testing.T) {
-	old := ver
+	oldVer := ver
+	oldEmbedded := embeddedVersion
 	ver = ""
-	defer func() { ver = old }()
+	embeddedVersion = "2026.03.05-9"
+	defer func() {
+		ver = oldVer
+		embeddedVersion = oldEmbedded
+	}()
 
-	s := String()
-	if s == "" {
-		t.Fatal("String() returned empty")
-	}
-}
-
-func TestNormalizePseudoVersionToCanonical(t *testing.T) {
-	in := "v0.0.0-20260305082248-0167d23c1333+dirty"
-	got := normalize(in)
-	want := "2026.03.05-82248"
-	if got != want {
-		t.Fatalf("normalize(%q)=%q want %q", in, got, want)
-	}
-}
-
-func TestNormalizeCanonicalStaysCanonical(t *testing.T) {
-	in := "v2026.03.05-9"
-	got := normalize(in)
-	if got != "2026.03.05-9" {
-		t.Fatalf("normalize canonical got %q", got)
+	if got := String(); got != "v2026.03.05-9" {
+		t.Fatalf("expected v2026.03.05-9, got %s", got)
 	}
 }

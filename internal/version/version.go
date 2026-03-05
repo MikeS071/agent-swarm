@@ -4,24 +4,27 @@
 //
 //	go build -ldflags "-X github.com/MikeS071/agent-swarm/internal/version.ver=2026.03.05-1"
 //
-// Falls back to Go module version from debug.ReadBuildInfo if ldflags not set.
+// Falls back to embedded VERSION, then Go module version from debug.ReadBuildInfo.
 package version
 
 import (
-	"fmt"
-	"regexp"
+	_ "embed"
 	"runtime/debug"
 	"strings"
 )
 
-// ver is set via ldflags. Empty means check build info or dev.
+// ver is set via ldflags. Empty means use embedded VERSION/build info fallback.
 var ver string
 
-var pseudoVersionRE = regexp.MustCompile(`^v\d+\.\d+\.\d+-(\d{14})-[0-9a-f]+(?:\+dirty)?$`)
+//go:embed VERSION
+var embeddedVersion string
 
 // Get returns the canonical version string (no "v" prefix).
 func Get() string {
 	if v := normalize(strings.TrimSpace(ver)); v != "" {
+		return v
+	}
+	if v := normalize(strings.TrimSpace(embeddedVersion)); v != "" {
 		return v
 	}
 	if bi, ok := debug.ReadBuildInfo(); ok {
@@ -40,13 +43,7 @@ func normalize(v string) string {
 	if isCanonical(v) {
 		return v
 	}
-	if pv, ok := convertPseudoToCanonical(v); ok {
-		return pv
-	}
-	if v == "" {
-		return ""
-	}
-	return v
+	return ""
 }
 
 func isCanonical(v string) bool {
@@ -72,20 +69,6 @@ func isCanonical(v string) bool {
 		}
 	}
 	return true
-}
-
-func convertPseudoToCanonical(v string) (string, bool) {
-	m := pseudoVersionRE.FindStringSubmatch("v" + v)
-	if len(m) != 2 {
-		return "", false
-	}
-	ts := m[1] // YYYYMMDDhhmmss
-	date := fmt.Sprintf("%s.%s.%s", ts[0:4], ts[4:6], ts[6:8])
-	patch := strings.TrimLeft(ts[8:], "0")
-	if patch == "" {
-		patch = "0"
-	}
-	return date + "-" + patch, true
 }
 
 // String returns the display form with "v" prefix.
