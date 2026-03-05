@@ -1,0 +1,19 @@
+=== COMMAND: go test ./... -count=1 ===
+?   	github.com/MikeS071/agent-swarm	[no test files]
+ok  	github.com/MikeS071/agent-swarm/cmd	1.910s
+ok  	github.com/MikeS071/agent-swarm/internal/backend	0.006s
+ok  	github.com/MikeS071/agent-swarm/internal/config	0.009s
+ok  	github.com/MikeS071/agent-swarm/internal/dispatcher	0.006s
+ok  	github.com/MikeS071/agent-swarm/internal/feature	0.014s
+?   	github.com/MikeS071/agent-swarm/internal/guardian	[no test files]
+ok  	github.com/MikeS071/agent-swarm/internal/guardian/schema	0.012s
+ok  	github.com/MikeS071/agent-swarm/internal/lifecycle	0.004s
+ok  	github.com/MikeS071/agent-swarm/internal/notify	0.011s
+ok  	github.com/MikeS071/agent-swarm/internal/progress	0.007s
+ok  	github.com/MikeS071/agent-swarm/internal/server	0.149s
+ok  	github.com/MikeS071/agent-swarm/internal/sysinfo	0.003s
+ok  	github.com/MikeS071/agent-swarm/internal/tracker	0.011s
+ok  	github.com/MikeS071/agent-swarm/internal/tui	0.010s
+ok  	github.com/MikeS071/agent-swarm/internal/version	0.005s
+ok  	github.com/MikeS071/agent-swarm/internal/watchdog	0.787s
+ok  	github.com/MikeS071/agent-swarm/internal/worktree	0.292s
