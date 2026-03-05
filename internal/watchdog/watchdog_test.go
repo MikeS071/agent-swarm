@@ -627,6 +627,60 @@ func TestRunOncePostBuildAutoCreationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRunOncePostBuildAutoCreationWaitsForAllNonPostBuildTickets(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"g1-01":  {Status: tracker.StatusDone, Phase: 2, Branch: "feat/g1-01"},
+		"g2-01":  {Status: tracker.StatusDone, Phase: 2, Branch: "feat/g2-01"},
+		"v2-01":  {Status: tracker.StatusDone, Phase: 3, Branch: "feat/v2-01"},
+		"v2-02":  {Status: tracker.StatusDone, Phase: 3, Branch: "feat/v2-02"},
+		"v2-03":  {Status: tracker.StatusDone, Phase: 3, Branch: "feat/v2-03"},
+		"int-v2": {Status: tracker.StatusFailed, Phase: 3, Branch: "feat/int-v2"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+		PostBuild: config.PostBuildConfig{
+			Order: []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			ParallelGroups: [][]string{
+				{"gap", "tst"},
+				{"review", "sec"},
+				{"doc", "clean"},
+			},
+		},
+	}
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if _, ok := tr.Tickets["int-run"]; ok {
+		t.Fatalf("did not expect run-scope post-build while non-post-build tickets are not done")
+	}
+	if len(be.spawnCalls) != 0 {
+		t.Fatalf("expected no spawns, got %#v", be.spawnCalls)
+	}
+}
+
 func TestRunOncePostBuildAutoCreationUsesRunScopeAcrossMultipleFeatures(t *testing.T) {
 	repo := initRepo(t)
 	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
