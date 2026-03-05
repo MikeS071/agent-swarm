@@ -31,6 +31,7 @@ type Decision struct {
 	Result       Result
 	RuleID       string
 	Reason       string
+	Unmet        []string
 	EvidencePath string
 }
 

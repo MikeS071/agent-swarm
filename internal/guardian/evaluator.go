@@ -26,6 +26,16 @@ func (StrictEvaluator) Evaluate(_ context.Context, req Request) (Decision, error
 		}
 		return Decision{Result: ResultAllow}, nil
 	case EventPhaseTransition, EventPostBuildDone:
+		unmet := UnmetConditionsFromContext(req.Context)
+		if len(unmet) > 0 {
+			ruleID := "transition_gate_requirements"
+			reason := "transition gate requirements unmet"
+			if req.Event == EventPostBuildDone {
+				ruleID = "post_build_transition_requirements"
+				reason = "post-build completion requirements unmet"
+			}
+			return Decision{Result: ResultBlock, RuleID: ruleID, Reason: reason, Unmet: unmet}, nil
+		}
 		return Decision{Result: ResultAllow}, nil
 	default:
 		return Decision{Result: ResultWarn, Reason: fmt.Sprintf("unknown guardian event: %s", req.Event)}, nil

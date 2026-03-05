@@ -268,7 +268,7 @@ func (w *Watchdog) ReconcileRunning(ctx context.Context) error {
 			hasCommits = false
 		}
 		if hasCommits {
-			gdec, _ := w.guardianCheck(ctx, guardian.EventBeforeMarkDone, ticketID, tk)
+			gdec, _ := w.guardianCheck(ctx, guardian.EventBeforeMarkDone, ticketID, tk, nil)
 			if gdec.Result == guardian.ResultBlock {
 				_ = w.dispatcher.MarkFailed(ticketID)
 				_ = w.saveTracker()
@@ -392,7 +392,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 					_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] would mark %s done (%s)", ticketID, sha))
 					continue
 				}
-				gdec, _ := w.guardianCheck(ctx, guardian.EventBeforeMarkDone, ticketID, tk)
+				gdec, _ := w.guardianCheck(ctx, guardian.EventBeforeMarkDone, ticketID, tk, nil)
 				if gdec.Result == guardian.ResultBlock {
 					_ = w.dispatcher.MarkFailed(ticketID)
 					_ = w.saveTracker()
@@ -519,7 +519,8 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		w.log("WARN: runningAgentCount: %v — assuming 0", err)
 		runningCount = 0
 	}
-	{
+	phaseGateReached := w.dispatcher.PhaseStatus().GateReached
+	if !phaseGateReached {
 		sig, spawnable := w.dispatcher.Evaluate()
 		w.log("idle check: signal=%s, spawnable=%d, running=%d", sig, len(spawnable), runningCount)
 		if sig == dispatcher.SignalSpawn && len(spawnable) > 0 && w.dispatcher.CanSpawnMore() {
@@ -557,22 +558,45 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				}
 			}
 		}
+	} else {
+		w.log("idle check: signal=%s, spawnable=%d, running=%d", dispatcher.SignalPhaseGate, 0, runningCount)
 	}
 
-	sig, _ := w.dispatcher.Evaluate()
+	sig := dispatcher.SignalBlocked
+	if phaseGateReached {
+		sig = dispatcher.SignalPhaseGate
+	} else {
+		sig, _ = w.dispatcher.Evaluate()
+	}
 	if sig == dispatcher.SignalPhaseGate {
-		gdec, _ := w.guardianCheck(ctx, guardian.EventPhaseTransition, "", tracker.Ticket{Phase: w.dispatcher.CurrentPhase()})
+		transitionUnmet := guardian.CollectTransitionUnmetConditions(guardian.TransitionCheckInput{
+			Tickets:             guardian.NextPhaseTickets(w.tracker, w.dispatcher.CurrentPhase()),
+			RequireExplicitRole: w.config.Project.RequireExplicitRole,
+			RequireVerifyCmd:    w.config.Project.RequireVerifyCmd,
+			DefaultVerifyCmd:    w.config.Integration.VerifyCmd,
+		})
+		gdec, _ := w.guardianCheck(ctx, guardian.EventPhaseTransition, "", tracker.Ticket{Phase: w.dispatcher.CurrentPhase()}, map[string]any{
+			"unmet_conditions": transitionUnmet,
+		})
 		if gdec.Result == guardian.ResultBlock {
 			if !w.gateNoticed {
 				w.gateNoticed = true
-				_ = w.appendEvent("guardian_block", "", map[string]any{"event": "phase_transition", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath, "phase": w.dispatcher.CurrentPhase()})
-				_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked phase transition: %s", gdec.Reason))
+				_ = w.appendEvent("guardian_block", "", map[string]any{
+					"event":            "phase_transition",
+					"rule":             gdec.RuleID,
+					"reason":           gdec.Reason,
+					"unmet_conditions": gdec.Unmet,
+					"evidence":         gdec.EvidencePath,
+					"phase":            w.dispatcher.CurrentPhase(),
+				})
+				_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked phase transition: %s", guardian.FormatDecisionBlockReason(gdec)))
 			}
 			return nil
 		}
 		if w.config.Project.AutoApprove {
 			_ = w.notifier.Info(ctx, "phase gate reached — auto-approving")
 			approvedSig, spawnable := w.dispatcher.ApprovePhaseGate()
+			sig = approvedSig
 			if err := w.saveTracker(); err != nil {
 				w.log("WARN: saveTracker after phase gate: %v", err)
 			}
@@ -610,10 +634,16 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	}
 
 	if sig == dispatcher.SignalAllDone && !w.completionSent {
-		gdec, _ := w.guardianCheck(ctx, guardian.EventPostBuildDone, "", tracker.Ticket{Phase: w.dispatcher.CurrentPhase()})
+		gdec, _ := w.guardianCheck(ctx, guardian.EventPostBuildDone, "", tracker.Ticket{Phase: w.dispatcher.CurrentPhase()}, nil)
 		if gdec.Result == guardian.ResultBlock {
-			_ = w.appendEvent("guardian_block", "", map[string]any{"event": "post_build_complete", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath})
-			_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked completion: %s", gdec.Reason))
+			_ = w.appendEvent("guardian_block", "", map[string]any{
+				"event":            "post_build_complete",
+				"rule":             gdec.RuleID,
+				"reason":           gdec.Reason,
+				"unmet_conditions": gdec.Unmet,
+				"evidence":         gdec.EvidencePath,
+			})
+			_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked completion: %s", guardian.FormatDecisionBlockReason(gdec)))
 			return nil
 		}
 		signature := w.completionSignature()
@@ -841,7 +871,7 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 		return fmt.Errorf("ticket %q not found", ticketID)
 	}
 
-	dec, _ := w.guardianCheck(ctx, guardian.EventBeforeSpawn, ticketID, tk)
+	dec, _ := w.guardianCheck(ctx, guardian.EventBeforeSpawn, ticketID, tk, nil)
 	if dec.Result == guardian.ResultBlock {
 		_ = w.appendEvent("guardian_block", ticketID, map[string]any{"event": "before_spawn", "rule": dec.RuleID, "reason": dec.Reason, "evidence": dec.EvidencePath})
 		return fmt.Errorf("guardian blocked spawn for %s: %s", ticketID, dec.Reason)
@@ -1508,21 +1538,25 @@ func buildFixPrompt(fixID, sourceTicket string, finding reviewFinding) string {
 	}
 	return b.String()
 }
-func (w *Watchdog) guardianCheck(ctx context.Context, ev guardian.Event, ticketID string, tk tracker.Ticket) (guardian.Decision, error) {
+func (w *Watchdog) guardianCheck(ctx context.Context, ev guardian.Event, ticketID string, tk tracker.Ticket, extraContext map[string]any) (guardian.Decision, error) {
 	if w == nil || w.guardian == nil {
 		return guardian.Decision{Result: guardian.ResultAllow}, nil
+	}
+	reqContext := map[string]any{
+		"type":       tk.Type,
+		"feature":    tk.Feature,
+		"profile":    strings.TrimSpace(tk.Profile),
+		"verify_cmd": strings.TrimSpace(tk.VerifyCmd),
+	}
+	for k, v := range extraContext {
+		reqContext[k] = v
 	}
 	dec, err := w.guardian.Evaluate(ctx, guardian.Request{
 		Event:    ev,
 		TicketID: ticketID,
 		Phase:    tk.Phase,
 		RunID:    strings.TrimSpace(tk.RunID),
-		Context: map[string]any{
-			"type":       tk.Type,
-			"feature":    tk.Feature,
-			"profile":    strings.TrimSpace(tk.Profile),
-			"verify_cmd": strings.TrimSpace(tk.VerifyCmd),
-		},
+		Context:  reqContext,
 	})
 	if err != nil {
 		return guardian.Decision{Result: guardian.ResultWarn, Reason: err.Error()}, nil
