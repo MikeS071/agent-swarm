@@ -1,0 +1,42 @@
+{
+  "findings": [
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "internal/watchdog/watchdog.go",
+      "line": 1873,
+      "title": "Out-of-scope implementation changes for gap-run feature",
+      "description": "The diff from `feat/int-run..HEAD` changes runtime behavior in `internal/watchdog/*` and `internal/version/*`, but this task's scope is post-build gap analysis output for feature `run`. These code changes are outside the declared scope and violate the feature contract.",
+      "suggested_fix": "Revert non-scope code changes and implement only the required gap-analysis deliverable files for `swarm/features/run`."
+    },
+    {
+      "severity": "high",
+      "category": "documentation",
+      "file": "swarm/features/run/gap-report.md",
+      "line": 1,
+      "title": "Required deliverable is missing",
+      "description": "The mandatory artifact `swarm/features/run/gap-report.md` does not exist, so the feature objective output is incomplete.",
+      "suggested_fix": "Create `swarm/features/run/gap-report.md` with confirmed complete items, identified gaps (with severity and rationale), and concrete follow-up tickets."
+    },
+    {
+      "severity": "high",
+      "category": "style",
+      "file": "internal/watchdog/watchdog.go",
+      "line": 1,
+      "title": "Modified file exceeds 800-line limit",
+      "description": "`internal/watchdog/watchdog.go` was modified and is 2571 lines long, violating the review rule that no file should exceed 800 lines.",
+      "suggested_fix": "Refactor watchdog responsibilities into smaller focused modules and move new logic into a dedicated file under 800 lines."
+    },
+    {
+      "severity": "high",
+      "category": "style",
+      "file": "internal/watchdog/watchdog_test.go",
+      "line": 1,
+      "title": "Modified test file exceeds 800-line limit",
+      "description": "`internal/watchdog/watchdog_test.go` was modified and is 1465 lines long, violating the 800-line file-size constraint.",
+      "suggested_fix": "Split tests into feature-focused files (for example: post-build generation, retry behavior, routing) and keep each file below 800 lines."
+    }
+  ],
+  "verdict": "BLOCK",
+  "summary": "0 critical, 4 high, 0 medium findings"
+}
