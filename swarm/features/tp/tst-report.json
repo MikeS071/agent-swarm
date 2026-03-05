@@ -1,0 +1,5 @@
+{
+  "findings": [],
+  "verdict": "PASS",
+  "summary": "go test ./... -count=1: 15 packages passed, 0 failed, 2 packages with no test files; go build ./...: passed; go vet ./...: passed"
+}
