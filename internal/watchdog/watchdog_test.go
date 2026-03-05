@@ -627,6 +627,62 @@ func TestRunOncePostBuildAutoCreationIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRunOncePostBuildAutoCreationUsesRunScopeAcrossMultipleFeatures(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"g1-01": {Status: tracker.StatusDone, Phase: 2, Branch: "feat/g1-01"},
+		"g2-01": {Status: tracker.StatusDone, Phase: 2, Branch: "feat/g2-01"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+		PostBuild: config.PostBuildConfig{
+			Order: []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			ParallelGroups: [][]string{
+				{"gap", "tst"},
+				{"review", "sec"},
+				{"doc", "clean"},
+			},
+		},
+	}
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if _, ok := tr.Tickets["int-run"]; !ok {
+		t.Fatalf("expected run-scope int ticket to exist")
+	}
+	if _, ok := tr.Tickets["int-g1"]; ok {
+		t.Fatalf("did not expect per-feature post-build ticket int-g1")
+	}
+	if _, ok := tr.Tickets["int-g2"]; ok {
+		t.Fatalf("did not expect per-feature post-build ticket int-g2")
+	}
+	if len(be.spawnCalls) != 1 || be.spawnCalls[0].TicketID != "int-run" {
+		t.Fatalf("expected one spawn for int-run, got %#v", be.spawnCalls)
+	}
+}
+
 func TestRunOncePostBuildAutoCreationDryRunNoMutation(t *testing.T) {
 	repo := initRepo(t)
 	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
