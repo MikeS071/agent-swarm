@@ -1,0 +1,5 @@
+{
+  "findings": [],
+  "verdict": "PASS",
+  "summary": "go test: pass; go build: pass; go vet: pass; 0 failed"
+}
