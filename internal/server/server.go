@@ -268,12 +268,14 @@ func (s *Server) handleProjectStatus(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.RUnlock()
 	sig, spawnable := s.dispatcher.Evaluate()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"project":      s.tracker.Project,
-		"signal":       sig,
-		"spawnable":    spawnable,
-		"phase_status": s.dispatcher.PhaseStatus(),
-		"stats":        s.tracker.Stats(),
-		"tickets":      s.tracker.Tickets,
+		"project":        s.tracker.Project,
+		"signal":         sig,
+		"spawnable":      spawnable,
+		"phase_status":   s.dispatcher.PhaseStatus(),
+		"stats":          s.tracker.Stats(),
+		"tickets":        s.tracker.Tickets,
+		"current_run_id": strings.TrimSpace(s.tracker.CurrentRunID),
+		"runs":           s.tracker.Runs,
 	})
 }
 

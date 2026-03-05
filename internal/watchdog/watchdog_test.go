@@ -309,6 +309,15 @@ func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 	if err := w.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run once: %v", err)
 	}
+	if len(be.spawnCalls) != 1 || be.spawnCalls[0].TicketID != "int-cch" {
+		t.Fatalf("expected one spawn for int-cch, got %#v", be.spawnCalls)
+	}
+	if err := tr.MarkDone("int-cch", "sha-int"); err != nil {
+		t.Fatalf("mark int-cch done: %v", err)
+	}
+	if err := w.ensurePostBuildTickets(context.Background()); err != nil {
+		t.Fatalf("ensure post-build tickets: %v", err)
+	}
 
 	tests := []struct {
 		id       string
@@ -317,14 +326,14 @@ func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 		profile  string
 		ticketTy string
 	}{
-		{id: "int-cch", status: tracker.StatusRunning, depends: []string{"cch-01", "cch-02"}, ticketTy: "int"},
-		{id: "gap-cch", status: tracker.StatusTodo, depends: []string{"int-cch"}, profile: "code-reviewer", ticketTy: "gap"},
-		{id: "tst-cch", status: tracker.StatusTodo, depends: []string{"int-cch"}, profile: "e2e-runner", ticketTy: "tst"},
-		{id: "review-cch", status: tracker.StatusTodo, depends: []string{"gap-cch", "tst-cch"}, profile: "code-reviewer", ticketTy: "review"},
-		{id: "sec-cch", status: tracker.StatusTodo, depends: []string{"gap-cch", "tst-cch"}, profile: "security-reviewer", ticketTy: "sec"},
-		{id: "doc-cch", status: tracker.StatusTodo, depends: []string{"review-cch", "sec-cch"}, profile: "doc-updater", ticketTy: "doc"},
-		{id: "clean-cch", status: tracker.StatusTodo, depends: []string{"review-cch", "sec-cch"}, profile: "refactor-cleaner", ticketTy: "clean"},
-		{id: "mem-cch", status: tracker.StatusTodo, depends: []string{"clean-cch", "doc-cch"}, profile: "code-reviewer", ticketTy: "mem"},
+		{id: "int-cch", status: tracker.StatusDone, depends: []string{"cch-01", "cch-02"}, ticketTy: "integration"},
+		{id: "gap-cch", status: tracker.StatusTodo, depends: []string{"int-cch"}, profile: "code-reviewer", ticketTy: "post_build"},
+		{id: "tst-cch", status: tracker.StatusTodo, depends: []string{"int-cch"}, profile: "e2e-runner", ticketTy: "post_build"},
+		{id: "review-cch", status: tracker.StatusTodo, depends: []string{"gap-cch", "tst-cch"}, profile: "code-reviewer", ticketTy: "post_build"},
+		{id: "sec-cch", status: tracker.StatusTodo, depends: []string{"gap-cch", "tst-cch"}, profile: "security-reviewer", ticketTy: "post_build"},
+		{id: "doc-cch", status: tracker.StatusTodo, depends: []string{"review-cch", "sec-cch"}, profile: "doc-updater", ticketTy: "post_build"},
+		{id: "clean-cch", status: tracker.StatusTodo, depends: []string{"review-cch", "sec-cch"}, profile: "refactor-cleaner", ticketTy: "post_build"},
+		{id: "mem-cch", status: tracker.StatusTodo, depends: []string{"clean-cch", "doc-cch"}, profile: "code-reviewer", ticketTy: "post_build"},
 	}
 
 	for _, tc := range tests {
@@ -350,8 +359,156 @@ func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 		assertSameDeps(t, tc.id, tk.Depends, tc.depends)
 	}
 
-	if len(be.spawnCalls) != 1 || be.spawnCalls[0].TicketID != "int-cch" {
-		t.Fatalf("expected one spawn for int-cch, got %#v", be.spawnCalls)
+}
+
+func TestRunOnceAutoCreatesRunScopedPostBuildTickets(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"cache-01": {Status: tracker.StatusDone, Phase: 2, Type: "feature", RunID: "run-1", Branch: "feat/cache-01"},
+		"api-01":   {Status: tracker.StatusDone, Phase: 2, Type: "feature", RunID: "run-1", Branch: "feat/api-01"},
+	})
+	tr.CurrentRunID = "run-1"
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+		PostBuild: config.PostBuildConfig{
+			Order: []string{"int", "gap", "tst", "review", "sec", "doc", "clean", "mem"},
+			ParallelGroups: [][]string{
+				{"gap", "tst"},
+				{"review", "sec"},
+				{"doc", "clean"},
+			},
+		},
+	}
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if tr.CurrentRunID != "run-1" {
+		t.Fatalf("current run = %q, want run-1", tr.CurrentRunID)
+	}
+	runState, ok := tr.Runs["run-1"]
+	if !ok {
+		t.Fatal("expected runs.run-1 state")
+	}
+	if runState.Integration != tracker.StatusRunning {
+		t.Fatalf("integration status = %q, want running", runState.Integration)
+	}
+
+	if _, ok := tr.Tickets["int-run-1"]; !ok {
+		t.Fatal("expected integration ticket int-run-1")
+	}
+	if tk := tr.Tickets["int-run-1"]; tk.Type != "integration" {
+		t.Fatalf("int-run-1 type = %q, want integration", tk.Type)
+	}
+	if _, ok := tr.Tickets["gap-run-1"]; ok {
+		t.Fatal("did not expect post_build tickets before integration is done")
+	}
+
+	if err := tr.MarkDone("int-run-1", "sha-int"); err != nil {
+		t.Fatalf("mark int-run-1 done: %v", err)
+	}
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once after integration done: %v", err)
+	}
+
+	steps := []string{"gap", "tst", "review", "sec", "doc", "clean", "mem"}
+	for _, step := range steps {
+		id := step + "-run-1"
+		tk, ok := tr.Tickets[id]
+		if !ok {
+			t.Fatalf("expected post_build ticket %s", id)
+		}
+		if tk.Type != "post_build" {
+			t.Fatalf("%s type = %q, want post_build", id, tk.Type)
+		}
+		if tk.RunID != "run-1" {
+			t.Fatalf("%s run_id = %q, want run-1", id, tk.RunID)
+		}
+	}
+	if _, ok := tr.Tickets["int-cache"]; ok {
+		t.Fatal("did not expect per-feature integration ticket int-cache")
+	}
+	if _, ok := tr.Tickets["int-api"]; ok {
+		t.Fatal("did not expect per-feature integration ticket int-api")
+	}
+}
+
+func TestRunOncePostBuildIdempotencySkipsDoneStepByRunKey(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"cache-01":  {Status: tracker.StatusDone, Phase: 2, Type: "feature", RunID: "run-1", Branch: "feat/cache-01"},
+		"api-01":    {Status: tracker.StatusDone, Phase: 2, Type: "feature", RunID: "run-1", Branch: "feat/api-01"},
+		"int-run-1": {Status: tracker.StatusDone, Phase: 2, Type: "integration", RunID: "run-1", Branch: "feat/int-run-1"},
+	})
+	tr.CurrentRunID = "run-1"
+	tr.Runs = map[string]tracker.RunState{
+		"run-1": {
+			Integration: tracker.StatusDone,
+			PostBuild: map[string]string{
+				"review": tracker.StatusDone, // idempotency key run-1:review
+			},
+		},
+	}
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:       "proj",
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+		PostBuild: config.PostBuildConfig{
+			Order: []string{"gap", "tst", "review", "sec"},
+			ParallelGroups: [][]string{
+				{"gap", "tst"},
+			},
+		},
+	}
+	be := &fakeBackend{}
+	n := &fakeNotifier{}
+	d := dispatcher.New(cfg, tr)
+	w := New(cfg, tr, d, be, wtMgr, n)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+
+	if _, ok := tr.Tickets["review-run-1"]; ok {
+		t.Fatal("did not expect review-run-1 to be recreated after run-1:review done")
+	}
+	if got := tr.Runs["run-1"].PostBuild["review"]; got != tracker.StatusDone {
+		t.Fatalf("runs.run-1.post_build.review = %q, want done", got)
 	}
 }
 
@@ -441,8 +598,8 @@ func TestRunOncePostBuildAutoCreationIsIdempotent(t *testing.T) {
 		t.Fatalf("second run once: %v", err)
 	}
 
-	if len(tr.Tickets) != 10 {
-		t.Fatalf("ticket count = %d, want 10", len(tr.Tickets))
+	if len(tr.Tickets) != 3 {
+		t.Fatalf("ticket count = %d, want 3", len(tr.Tickets))
 	}
 	if len(be.spawnCalls) != 1 {
 		t.Fatalf("expected one spawn across both passes, got %d", len(be.spawnCalls))

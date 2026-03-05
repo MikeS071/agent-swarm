@@ -190,3 +190,42 @@ func TestEvaluateSpawnOrderUsesPriority(t *testing.T) {
 		}
 	}
 }
+
+func TestEvaluateDispatchOrderByTicketType(t *testing.T) {
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"feat-a":     {Status: tracker.StatusTodo, Phase: 1, Type: "feature"},
+		"int-run-1":  {Status: tracker.StatusTodo, Phase: 1, Type: "integration"},
+		"review-run": {Status: tracker.StatusTodo, Phase: 1, Type: "post_build"},
+	})
+	d := New(testCfg(3), tr)
+
+	sig, ids := d.Evaluate()
+	if sig != SignalSpawn {
+		t.Fatalf("expected spawn signal, got %q", sig)
+	}
+	if len(ids) != 1 || ids[0] != "feat-a" {
+		t.Fatalf("expected feature ticket first, got %v", ids)
+	}
+
+	if err := tr.MarkDone("feat-a", "sha-feat"); err != nil {
+		t.Fatalf("mark feat done: %v", err)
+	}
+	sig, ids = d.Evaluate()
+	if sig != SignalSpawn {
+		t.Fatalf("expected spawn signal after feature done, got %q", sig)
+	}
+	if len(ids) != 1 || ids[0] != "int-run-1" {
+		t.Fatalf("expected integration ticket second, got %v", ids)
+	}
+
+	if err := tr.MarkDone("int-run-1", "sha-int"); err != nil {
+		t.Fatalf("mark integration done: %v", err)
+	}
+	sig, ids = d.Evaluate()
+	if sig != SignalSpawn {
+		t.Fatalf("expected spawn signal after integration done, got %q", sig)
+	}
+	if len(ids) != 1 || ids[0] != "review-run" {
+		t.Fatalf("expected post_build ticket last, got %v", ids)
+	}
+}

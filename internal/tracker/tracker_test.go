@@ -249,6 +249,103 @@ func TestSaveToIncludesExtendedTicketSchemaFields(t *testing.T) {
 	}
 }
 
+func TestLoadSupportsRunStateSchema(t *testing.T) {
+	t.Parallel()
+
+	path := writeTrackerFile(t, `{
+  "project":"x",
+  "current_run_id":"run-42",
+  "runs":{
+    "run-42":{
+      "integration":"done",
+      "post_build":{"review":"done","sec":"todo"}
+    }
+  },
+  "tickets":{
+    "t1":{"status":"todo","phase":1,"depends":[],"type":"feature","run_id":"run-42"}
+  }
+}`)
+	tr, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if tr.CurrentRunID != "run-42" {
+		t.Fatalf("current run = %q, want run-42", tr.CurrentRunID)
+	}
+	run, ok := tr.Runs["run-42"]
+	if !ok {
+		t.Fatal("missing run-42 state")
+	}
+	if run.Integration != "done" {
+		t.Fatalf("integration = %q, want done", run.Integration)
+	}
+	if run.PostBuild["review"] != "done" {
+		t.Fatalf("post_build.review = %q, want done", run.PostBuild["review"])
+	}
+	if run.PostBuild["sec"] != "todo" {
+		t.Fatalf("post_build.sec = %q, want todo", run.PostBuild["sec"])
+	}
+}
+
+func TestSaveToIncludesRunStateSchemaFields(t *testing.T) {
+	t.Parallel()
+
+	tr := &Tracker{
+		Project:      "x",
+		CurrentRunID: "run-42",
+		Runs: map[string]RunState{
+			"run-42": {
+				Integration: "running",
+				PostBuild: map[string]string{
+					"review": "done",
+				},
+			},
+		},
+		Tickets: map[string]Ticket{
+			"t1": {
+				Status:  "todo",
+				Phase:   1,
+				Depends: []string{},
+				Type:    "feature",
+				RunID:   "run-42",
+			},
+		},
+	}
+	path := filepath.Join(t.TempDir(), "tracker.json")
+	if err := tr.SaveTo(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	var raw struct {
+		CurrentRunID string                    `json:"current_run_id"`
+		Runs         map[string]map[string]any `json:"runs"`
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if raw.CurrentRunID != "run-42" {
+		t.Fatalf("current_run_id=%q want run-42", raw.CurrentRunID)
+	}
+	run := raw.Runs["run-42"]
+	if run == nil {
+		t.Fatal("missing runs.run-42")
+	}
+	if run["integration"] != "running" {
+		t.Fatalf("integration=%v want running", run["integration"])
+	}
+	post, ok := run["post_build"].(map[string]any)
+	if !ok {
+		t.Fatalf("post_build type=%T want map", run["post_build"])
+	}
+	if post["review"] != "done" {
+		t.Fatalf("post_build.review=%v want done", post["review"])
+	}
+}
+
 func TestSaveToOmitsEmptyExtendedTicketSchemaFields(t *testing.T) {
 	t.Parallel()
 

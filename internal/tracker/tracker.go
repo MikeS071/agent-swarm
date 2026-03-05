@@ -11,10 +11,17 @@ import (
 )
 
 type Tracker struct {
-	Project       string            `json:"project"`
-	Tickets       map[string]Ticket `json:"tickets"`
-	UnlockedPhase int               `json:"unlocked_phase,omitempty"`
-	filePath      string            `json:"-"`
+	Project       string              `json:"project"`
+	Tickets       map[string]Ticket   `json:"tickets"`
+	CurrentRunID  string              `json:"current_run_id,omitempty"`
+	Runs          map[string]RunState `json:"runs,omitempty"`
+	UnlockedPhase int                 `json:"unlocked_phase,omitempty"`
+	filePath      string              `json:"-"`
+}
+
+type RunState struct {
+	Integration string            `json:"integration,omitempty"`
+	PostBuild   map[string]string `json:"post_build,omitempty"`
 }
 
 type Ticket struct {
@@ -66,6 +73,9 @@ func Load(path string) (*Tracker, error) {
 	if t.Tickets == nil {
 		t.Tickets = map[string]Ticket{}
 	}
+	if t.Runs == nil {
+		t.Runs = map[string]RunState{}
+	}
 	t.filePath = path
 	return &t, nil
 }
@@ -83,6 +93,9 @@ func (t *Tracker) SaveTo(path string) error {
 	}
 	if t.Tickets == nil {
 		t.Tickets = map[string]Ticket{}
+	}
+	if t.Runs == nil {
+		t.Runs = map[string]RunState{}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir tracker dir: %w", err)
@@ -281,6 +294,12 @@ const (
 	StatusFailed  = "failed"
 )
 
+const (
+	TicketTypeFeature     = "feature"
+	TicketTypeIntegration = "integration"
+	TicketTypePostBuild   = "post_build"
+)
+
 // Get returns a ticket by ID
 func (t *Tracker) Get(id string) (Ticket, bool) {
 	tk, ok := t.Tickets[id]
@@ -365,4 +384,82 @@ func NewFromPtrs(project string, tickets map[string]*Ticket) *Tracker {
 		m[k] = *v
 	}
 	return &Tracker{Project: project, Tickets: m}
+}
+
+func (t *Tracker) EnsureRun(runID string) {
+	if t == nil {
+		return
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	if t.Runs == nil {
+		t.Runs = map[string]RunState{}
+	}
+	rs := t.Runs[runID]
+	if rs.PostBuild == nil {
+		rs.PostBuild = map[string]string{}
+	}
+	t.Runs[runID] = rs
+}
+
+func (t *Tracker) SetRunIntegration(runID, status string) {
+	if t == nil {
+		return
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	t.EnsureRun(runID)
+	rs := t.Runs[runID]
+	rs.Integration = strings.TrimSpace(status)
+	t.Runs[runID] = rs
+}
+
+func (t *Tracker) SetRunPostBuild(runID, step, status string) {
+	if t == nil {
+		return
+	}
+	runID = strings.TrimSpace(runID)
+	step = strings.TrimSpace(step)
+	if runID == "" || step == "" {
+		return
+	}
+	t.EnsureRun(runID)
+	rs := t.Runs[runID]
+	rs.PostBuild[step] = strings.TrimSpace(status)
+	t.Runs[runID] = rs
+}
+
+func (t *Tracker) RunIntegration(runID string) string {
+	if t == nil {
+		return ""
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return ""
+	}
+	rs, ok := t.Runs[runID]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(rs.Integration)
+}
+
+func (t *Tracker) RunPostBuild(runID, step string) string {
+	if t == nil {
+		return ""
+	}
+	runID = strings.TrimSpace(runID)
+	step = strings.TrimSpace(step)
+	if runID == "" || step == "" {
+		return ""
+	}
+	rs, ok := t.Runs[runID]
+	if !ok || rs.PostBuild == nil {
+		return ""
+	}
+	return strings.TrimSpace(rs.PostBuild[step])
 }
