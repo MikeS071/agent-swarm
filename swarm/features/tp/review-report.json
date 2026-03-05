@@ -1,0 +1,42 @@
+{
+  "findings": [
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "cmd/init.go",
+      "line": 1,
+      "title": "Out-of-scope codebase-wide changes for a gap-only task",
+      "description": "Compared with dependency base feat/int-tp, this branch changes 71 files across core runtime/CLI areas (cmd/, internal/, docs/) instead of limiting work to running the gap workflow for feature tp. The stated scope is gap execution outputs for tp and no unrelated feature changes.",
+      "suggested_fix": "Reduce the branch diff to only gap workflow artifacts for tp, and move unrelated runtime/CLI refactors into separate feature branches."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "docs/project_starter_prompt.md",
+      "line": 1,
+      "title": "Required gap outputs for feature tp are missing",
+      "description": "The only added artifact is a documentation file, and there are no changes under swarm feature output paths for tp. This does not satisfy the objective to execute the tp gap workflow and produce concrete gap outputs.",
+      "suggested_fix": "Run the gap workflow for feature tp and commit the generated tp gap outputs in the expected swarm feature output location."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "cmd/migrate_cmd.go",
+      "line": 1,
+      "title": "Post-build run-scope migration command removed",
+      "description": "The `migrate post-build-run-scope` CLI command and its implementation (`internal/tracker/migrate/post_build_run_scope.go`) were deleted. Removing migration paths can strand legacy tracker state and break upgrade compatibility without an explicit replacement path.",
+      "suggested_fix": "Restore migration functionality or provide a documented, tested replacement migration flow before removing the legacy command."
+    },
+    {
+      "severity": "high",
+      "category": "correctness",
+      "file": "cmd/init_test.go",
+      "line": 1,
+      "title": "Substantial test-suite removal alongside behavior changes",
+      "description": "Many test files were deleted (including command, tracker, prompts, watchdog, and worktree tests) while production code in the same areas changed. This increases regression risk and conflicts with the required process of maintaining tests for changed behavior.",
+      "suggested_fix": "Reintroduce or replace coverage for removed test suites to validate all changed command/runtime flows before merge."
+    }
+  ],
+  "verdict": "BLOCK",
+  "summary": "0 critical, 4 high, 0 medium findings"
+}
