@@ -2189,7 +2189,13 @@ func (w *Watchdog) mergeBranchesIntoBase(repo, base string, branches []string) (
 			}
 		}
 		if _, err := w.gitOutput(wtPath, "merge", branch, "--no-ff", "--no-edit"); err != nil {
-			return "", fmt.Errorf("merge %s into %s: %w", branch, base, err)
+			resolved, rerr := w.tryAutoResolveArtifactMergeConflicts(wtPath)
+			if rerr != nil {
+				return "", fmt.Errorf("merge %s into %s: %w", branch, base, rerr)
+			}
+			if !resolved {
+				return "", fmt.Errorf("merge %s into %s: %w", branch, base, err)
+			}
 		}
 	}
 
@@ -2235,6 +2241,55 @@ func (w *Watchdog) preparePostBuildBranch(ticketID, branch, base string) error {
 		return err
 	}
 	return nil
+}
+
+func (w *Watchdog) tryAutoResolveArtifactMergeConflicts(wtPath string) (bool, error) {
+	filesOut, err := w.gitOutput(wtPath, "diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(strings.TrimSpace(filesOut), "\n")
+	conflicts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		f := strings.TrimSpace(line)
+		if f != "" {
+			conflicts = append(conflicts, f)
+		}
+	}
+	if len(conflicts) == 0 {
+		return false, nil
+	}
+	for _, f := range conflicts {
+		if !isPostBuildArtifactPath(f) {
+			return false, nil
+		}
+	}
+	for _, f := range conflicts {
+		if _, err := w.gitOutput(wtPath, "checkout", "--theirs", "--", f); err != nil {
+			return false, err
+		}
+		if _, err := w.gitOutput(wtPath, "add", "--", f); err != nil {
+			return false, err
+		}
+	}
+	if _, err := w.gitOutput(wtPath, "commit", "--no-edit"); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func isPostBuildArtifactPath(path string) bool {
+	p := filepath.ToSlash(strings.TrimSpace(path))
+	if !strings.HasPrefix(p, "swarm/features/") {
+		return false
+	}
+	base := filepath.Base(p)
+	switch base {
+	case "review-report.json", "sec-report.json", "test-report.md", "gap-report.md", "doc-report.md", "clean-report.md", "mem-report.md":
+		return true
+	default:
+		return false
+	}
 }
 
 func (w *Watchdog) gitOutput(dir string, args ...string) (string, error) {
