@@ -17,8 +17,8 @@ import (
 	"github.com/MikeS071/agent-swarm/internal/dispatcher"
 	"github.com/MikeS071/agent-swarm/internal/progress"
 	"github.com/MikeS071/agent-swarm/internal/sysinfo"
-	"github.com/MikeS071/agent-swarm/internal/version"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
+	"github.com/MikeS071/agent-swarm/internal/version"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -637,27 +637,71 @@ func (m *model) toggleAutoApprove() {
 	if m.config == nil || len(m.projects) == 0 {
 		return
 	}
-	m.config.Project.AutoApprove = !m.config.Project.AutoApprove
+	next := !m.config.Project.AutoApprove
 	proj := m.projects[m.projectIndex]
 
-	// Write back to swarm.toml
+	// Write back to swarm.toml (robust even when auto_approve key is missing)
 	raw, err := os.ReadFile(proj.configPath)
 	if err != nil {
 		m.lastErr = fmt.Errorf("read config: %w", err)
 		return
 	}
-	updated := strings.Replace(string(raw),
-		fmt.Sprintf("auto_approve = %v", !m.config.Project.AutoApprove),
-		fmt.Sprintf("auto_approve = %v", m.config.Project.AutoApprove), 1)
+	updated, err := setProjectAutoApprove(string(raw), next)
+	if err != nil {
+		m.lastErr = fmt.Errorf("toggle auto/manual: %w", err)
+		return
+	}
 	if err := os.WriteFile(proj.configPath, []byte(updated), 0o644); err != nil {
 		m.lastErr = fmt.Errorf("write config: %w", err)
 		return
 	}
+
+	// Reload from disk so title bar and state stay in sync.
+	m.refresh()
+
 	mode := "manual (phase gates)"
-	if m.config.Project.AutoApprove {
+	if m.config != nil && m.config.Project.AutoApprove {
 		mode = "auto (no gates)"
 	}
 	m.lastErr = fmt.Errorf("🔄 Switched to %s", mode)
+}
+
+func setProjectAutoApprove(raw string, value bool) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", fmt.Errorf("empty config")
+	}
+	lines := strings.Split(raw, "\n")
+	projectStart := -1
+	projectEnd := len(lines)
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if trim == "[project]" {
+			projectStart = i
+			continue
+		}
+		if projectStart >= 0 && strings.HasPrefix(trim, "[") && strings.HasSuffix(trim, "]") {
+			projectEnd = i
+			break
+		}
+	}
+	if projectStart < 0 {
+		return "", fmt.Errorf("missing [project] section")
+	}
+
+	newLine := fmt.Sprintf("auto_approve = %v", value)
+	for i := projectStart + 1; i < projectEnd; i++ {
+		trim := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trim, "auto_approve") {
+			indent := lines[i][:len(lines[i])-len(strings.TrimLeft(lines[i], " \t"))]
+			lines[i] = indent + newLine
+			return strings.Join(lines, "\n"), nil
+		}
+	}
+
+	updated := append([]string{}, lines[:projectEnd]...)
+	updated = append(updated, newLine)
+	updated = append(updated, lines[projectEnd:]...)
+	return strings.Join(updated, "\n"), nil
 }
 
 func (m *model) approveGate() {

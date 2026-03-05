@@ -32,6 +32,11 @@ var doctorCmd = &cobra.Command{
 		}
 
 		issues := runPrepChecks(cfg, tr, promptDir)
+		if div, derr := detectTrackerDivergence(cfg, trackerPath, tr); derr != nil {
+			issues = append(issues, prepIssue{Field: "tracker", Reason: derr.Error()})
+		} else if div != nil {
+			issues = append(issues, prepIssue{Field: "tracker", Reason: div.Error()})
+		}
 		status := map[string]any{
 			"project": cfg.Project.Name,
 			"ok":      len(issues) == 0,

@@ -30,6 +30,11 @@ func runWatchWithConfigPath(ctx context.Context, configPath string, intervalOver
 	if err != nil {
 		return err
 	}
+	if div, derr := detectTrackerDivergence(cfg, trackerPath, tr); derr != nil {
+		return derr
+	} else if div != nil {
+		return fmt.Errorf("%s; use a single source of truth before running watchdog", div.Error())
+	}
 	if issues := runPrepChecks(cfg, tr, promptDir); len(issues) > 0 {
 		return fmt.Errorf("prep gate failed: %d issue(s); run `agent-swarm prep --config %s`", len(issues), configPath)
 	}

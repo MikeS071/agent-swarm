@@ -333,6 +333,82 @@ func TestRunOncePhaseGateBlocksSpawning(t *testing.T) {
 	}
 }
 
+func TestPhaseGateNoticePersistsAcrossWatchdogInstances(t *testing.T) {
+	repo := initRepo(t)
+	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")
+	promptDir := filepath.Join(t.TempDir(), "prompts")
+	writeFile(t, filepath.Join(promptDir, "sw-02.md"), "# sw-02\n")
+
+	trackerPath := filepath.Join(t.TempDir(), "tracker.json")
+	tr := tracker.NewFromPtrs("proj", map[string]*tracker.Ticket{
+		"sw-01": {Status: tracker.StatusDone, Phase: 1, Branch: "feat/sw-01"},
+		"sw-02": {Status: tracker.StatusTodo, Phase: 2, Branch: "feat/sw-02"},
+	})
+	if err := tr.SaveTo(trackerPath); err != nil {
+		t.Fatalf("save tracker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Repo:       repo,
+			BaseBranch: "main",
+			PromptDir:  promptDir,
+			Tracker:    trackerPath,
+			MaxAgents:  1,
+		},
+		Backend: config.BackendConfig{Model: "m", Effort: "e"},
+	}
+
+	be1 := &fakeBackend{}
+	n1 := &fakeNotifier{}
+	w1 := New(cfg, tr, dispatcher.New(cfg, tr), be1, wtMgr, n1)
+	if err := w1.RunOnce(context.Background()); err != nil {
+		t.Fatalf("first run once: %v", err)
+	}
+	if len(n1.infos) == 0 {
+		t.Fatalf("expected initial phase gate info notification")
+	}
+
+	tr2, err := tracker.Load(trackerPath)
+	if err != nil {
+		t.Fatalf("reload tracker: %v", err)
+	}
+	be2 := &fakeBackend{}
+	n2 := &fakeNotifier{}
+	w2 := New(cfg, tr2, dispatcher.New(cfg, tr2), be2, wtMgr, n2)
+	if err := w2.RunOnce(context.Background()); err != nil {
+		t.Fatalf("second run once: %v", err)
+	}
+	if len(n2.infos) != 0 || len(n2.alerts) != 0 {
+		t.Fatalf("expected deduped phase gate (no repeat notification), got infos=%d alerts=%d", len(n2.infos), len(n2.alerts))
+	}
+
+	// Force marker to age beyond reminder interval and verify escalation alert.
+	markerPath := w2.phaseGateNoticePath()
+	var marker phaseGateNotice
+	b, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if err := json.Unmarshal(b, &marker); err != nil {
+		t.Fatalf("unmarshal marker: %v", err)
+	}
+	old := time.Now().UTC().Add(-20 * time.Minute).Format(time.RFC3339)
+	marker.FirstSeenAt = old
+	marker.LastNoticeAt = old
+	mb, _ := json.Marshal(marker)
+	if err := os.WriteFile(markerPath, append(mb, '\n'), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	if err := w2.RunOnce(context.Background()); err != nil {
+		t.Fatalf("third run once: %v", err)
+	}
+	if len(n2.alerts) == 0 {
+		t.Fatalf("expected reminder alert after interval")
+	}
+}
+
 func TestRunOnceAutoCreatesPostBuildTickets(t *testing.T) {
 	repo := initRepo(t)
 	wtMgr := worktree.New(repo, filepath.Join(t.TempDir(), "wts"), "main")

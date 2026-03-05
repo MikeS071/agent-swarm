@@ -561,11 +561,12 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 
 	sig, _ := w.dispatcher.Evaluate()
 	if sig == dispatcher.SignalPhaseGate {
-		gdec, _ := w.guardianCheck(ctx, guardian.EventPhaseTransition, "", tracker.Ticket{Phase: w.dispatcher.CurrentPhase()})
+		phase := w.dispatcher.CurrentPhase()
+		gdec, _ := w.guardianCheck(ctx, guardian.EventPhaseTransition, "", tracker.Ticket{Phase: phase})
 		if gdec.Result == guardian.ResultBlock {
 			if !w.gateNoticed {
 				w.gateNoticed = true
-				_ = w.appendEvent("guardian_block", "", map[string]any{"event": "phase_transition", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath, "phase": w.dispatcher.CurrentPhase()})
+				_ = w.appendEvent("guardian_block", "", map[string]any{"event": "phase_transition", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath, "phase": phase})
 				_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked phase transition: %s", gdec.Reason))
 			}
 			return nil
@@ -576,8 +577,11 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 			if err := w.saveTracker(); err != nil {
 				w.log("WARN: saveTracker after phase gate: %v", err)
 			}
-			if err := w.appendEvent("phase_gate_auto_approved", "", nil); err != nil {
+			if err := w.appendEvent("phase_gate_auto_approved", "", map[string]any{"phase": phase}); err != nil {
 				w.log("WARN: appendEvent(phase_gate_auto_approved): %v", err)
+			}
+			if err := w.clearPhaseGateNotice(); err != nil {
+				w.log("WARN: clearPhaseGateNotice: %v", err)
 			}
 			if approvedSig == dispatcher.SignalSpawn && len(spawnable) > 0 && w.dispatcher.CanSpawnMore() {
 				slots := w.config.Project.MaxAgents
@@ -594,19 +598,17 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				}
 			}
 			w.gateNoticed = false
-		} else if !w.gateNoticed {
-			w.gateNoticed = true
-			if w.dryRun {
-				_ = w.notifier.Info(ctx, "[dry-run] phase gate reached")
-			} else {
-				if err := w.appendEvent("phase_gate", "", nil); err != nil {
-					w.log("WARN: appendEvent(phase_gate): %v", err)
-				}
-				_ = w.notifier.Info(ctx, "phase gate reached; run `swarm go` to continue")
+		} else {
+			if err := w.maybeNotifyPhaseGate(ctx, phase, w.dryRun); err != nil {
+				w.log("WARN: maybeNotifyPhaseGate: %v", err)
 			}
+			w.gateNoticed = true
 		}
 	} else {
 		w.gateNoticed = false
+		if err := w.clearPhaseGateNotice(); err != nil {
+			w.log("WARN: clearPhaseGateNotice: %v", err)
+		}
 	}
 
 	if sig == dispatcher.SignalAllDone && !w.completionSent {
@@ -673,6 +675,15 @@ func (w *Watchdog) maybeSendStatusReport(ctx context.Context, sig dispatcher.Sig
 	if len(active) > 0 {
 		msg += " | active: " + strings.Join(active, ", ")
 	}
+	if sig == dispatcher.SignalPhaseGate {
+		msg += " | blocked: PHASE_GATE | next: agent-swarm go"
+	} else if sig == dispatcher.SignalBlocked {
+		if stats.Failed > 0 {
+			msg += " | blocked: FAILED_TICKETS | next: fix/respawn failed"
+		} else {
+			msg += " | blocked: WAITING_DEPENDENCIES"
+		}
+	}
 	if err := w.notifier.Info(ctx, msg); err != nil {
 		return err
 	}
@@ -716,6 +727,110 @@ func (w *Watchdog) writeLastStatusReportAt(ts time.Time) error {
 		return nil
 	}
 	return os.WriteFile(p, []byte(ts.UTC().Format(time.RFC3339)+"\n"), 0o644)
+}
+
+type phaseGateNotice struct {
+	Phase        int    `json:"phase"`
+	FirstSeenAt  string `json:"first_seen_at"`
+	LastNoticeAt string `json:"last_notice_at"`
+}
+
+func (w *Watchdog) phaseGateNoticePath() string {
+	if w == nil || w.config == nil || strings.TrimSpace(w.config.Project.Tracker) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(w.config.Project.Tracker), ".phase-gate-last.json")
+}
+
+func (w *Watchdog) readPhaseGateNotice() (*phaseGateNotice, error) {
+	p := w.phaseGateNoticePath()
+	if p == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var n phaseGateNotice
+	if err := json.Unmarshal(b, &n); err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+func (w *Watchdog) writePhaseGateNotice(n phaseGateNotice) error {
+	p := w.phaseGateNoticePath()
+	if p == "" {
+		return nil
+	}
+	b, err := json.MarshalIndent(n, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, append(b, '\n'), 0o644)
+}
+
+func (w *Watchdog) clearPhaseGateNotice() error {
+	p := w.phaseGateNoticePath()
+	if p == "" {
+		return nil
+	}
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (w *Watchdog) maybeNotifyPhaseGate(ctx context.Context, phase int, dryRun bool) error {
+	now := time.Now().UTC()
+	notice, err := w.readPhaseGateNotice()
+	if err != nil {
+		return err
+	}
+
+	reminderInterval := 15 * time.Minute
+	if notice == nil || notice.Phase != phase {
+		if dryRun {
+			_ = w.notifier.Info(ctx, "[dry-run] phase gate reached")
+		} else {
+			if err := w.appendEvent("phase_gate", "", map[string]any{"phase": phase, "kind": "initial"}); err != nil {
+				w.log("WARN: appendEvent(phase_gate): %v", err)
+			}
+			_ = w.notifier.Info(ctx, fmt.Sprintf("phase %d gate reached; run `agent-swarm go` to continue", phase))
+		}
+		return w.writePhaseGateNotice(phaseGateNotice{
+			Phase:        phase,
+			FirstSeenAt:  now.Format(time.RFC3339),
+			LastNoticeAt: now.Format(time.RFC3339),
+		})
+	}
+
+	last, err := time.Parse(time.RFC3339, strings.TrimSpace(notice.LastNoticeAt))
+	if err != nil {
+		last = now
+	}
+	if now.Sub(last) < reminderInterval {
+		return nil
+	}
+
+	first, err := time.Parse(time.RFC3339, strings.TrimSpace(notice.FirstSeenAt))
+	if err != nil {
+		first = last
+	}
+	waiting := now.Sub(first).Round(time.Minute)
+	if dryRun {
+		_ = w.notifier.Info(ctx, fmt.Sprintf("[dry-run] phase %d gate reminder (%s waiting)", phase, waiting))
+	} else {
+		if err := w.appendEvent("phase_gate_reminder", "", map[string]any{"phase": phase, "waiting": waiting.String()}); err != nil {
+			w.log("WARN: appendEvent(phase_gate_reminder): %v", err)
+		}
+		_ = w.notifier.Alert(ctx, fmt.Sprintf("phase %d gate still waiting (%s) — run `agent-swarm go` to continue", phase, waiting))
+	}
+	notice.LastNoticeAt = now.Format(time.RFC3339)
+	return w.writePhaseGateNotice(*notice)
 }
 
 func (w *Watchdog) completionSignature() string {

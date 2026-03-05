@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/MikeS071/agent-swarm/internal/config"
+	"github.com/MikeS071/agent-swarm/internal/dispatcher"
 	"github.com/MikeS071/agent-swarm/internal/tracker"
 	"github.com/MikeS071/agent-swarm/internal/tui"
 	"github.com/fatih/color"
@@ -22,6 +23,15 @@ var statusJSON bool
 var statusWatch bool
 var statusCompact bool
 var statusLive bool
+
+type statusHints struct {
+	Signal        string `json:"signal,omitempty"`
+	BlockedReason string `json:"blocked_reason,omitempty"`
+	NextAction    string `json:"next_action,omitempty"`
+	Spawnable     int    `json:"spawnable_count,omitempty"`
+	TrackerPath   string `json:"tracker_path,omitempty"`
+	Warning       string `json:"warning,omitempty"`
+}
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
@@ -40,6 +50,12 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		hints := deriveStatusHints(cfg, tr, trackerPath)
+		if div, derr := detectTrackerDivergence(cfg, trackerPath, tr); derr != nil {
+			hints.Warning = derr.Error()
+		} else if div != nil {
+			hints.Warning = div.Error()
+		}
 		if statusProject != "" && statusProject != tr.Project {
 			return fmt.Errorf("project %q not found (tracker project is %q)", statusProject, tr.Project)
 		}
@@ -48,13 +64,13 @@ var statusCmd = &cobra.Command{
 			return runLiveStatus(cfgFile, cfg)
 		}
 		if statusJSON {
-			return printStatusJSON(tr)
+			return printStatusJSON(tr, hints)
 		}
 		if statusCompact {
 			printStatusCompact(tr)
 			return nil
 		}
-		printStatusTable(tr)
+		printStatusTable(tr, hints)
 		return nil
 	},
 }
@@ -68,7 +84,7 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 }
 
-func printStatusJSON(tr *tracker.Tracker) error {
+func printStatusJSON(tr *tracker.Tracker, hints statusHints) error {
 	ids := make([]string, 0, len(tr.Tickets))
 	for id := range tr.Tickets {
 		ids = append(ids, id)
@@ -85,12 +101,14 @@ func printStatusJSON(tr *tracker.Tracker) error {
 		ActivePhase int                       `json:"activePhase"`
 		Stats       tracker.Stats             `json:"stats"`
 		Spawnable   []string                  `json:"spawnable"`
+		Hints       statusHints               `json:"hints"`
 		Tickets     map[string]tracker.Ticket `json:"tickets"`
 	}{
 		Project:     tr.Project,
 		ActivePhase: tr.ActivePhase(),
 		Stats:       tr.Stats(),
 		Spawnable:   tr.GetSpawnable(),
+		Hints:       hints,
 		Tickets:     tickets,
 	}
 	enc := json.NewEncoder(color.Output)
@@ -98,12 +116,25 @@ func printStatusJSON(tr *tracker.Tracker) error {
 	return enc.Encode(payload)
 }
 
-func printStatusTable(tr *tracker.Tracker) {
+func printStatusTable(tr *tracker.Tracker, hints statusHints) {
 	fmt.Fprintf(color.Output, "Project: %s\n", tr.Project)
 	fmt.Fprintf(color.Output, "Active phase: %d\n", tr.ActivePhase())
 	stats := tr.Stats()
-	fmt.Fprintf(color.Output, "Stats: done=%d running=%d todo=%d failed=%d blocked=%d total=%d\n\n",
+	fmt.Fprintf(color.Output, "Stats: done=%d running=%d todo=%d failed=%d blocked=%d total=%d\n",
 		stats.Done, stats.Running, stats.Todo, stats.Failed, stats.Blocked, stats.Total)
+	if strings.TrimSpace(hints.Signal) != "" {
+		fmt.Fprintf(color.Output, "Signal: %s\n", hints.Signal)
+	}
+	if strings.TrimSpace(hints.BlockedReason) != "" {
+		fmt.Fprintf(color.Output, "Blocked reason: %s\n", hints.BlockedReason)
+	}
+	if strings.TrimSpace(hints.NextAction) != "" {
+		fmt.Fprintf(color.Output, "Next action: %s\n", hints.NextAction)
+	}
+	if strings.TrimSpace(hints.Warning) != "" {
+		fmt.Fprintf(color.Output, "Warning: %s\n", hints.Warning)
+	}
+	fmt.Fprintln(color.Output)
 
 	w := tabwriter.NewWriter(color.Output, 0, 8, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tPHASE\tSTATUS\tBRANCH\tDEPENDS\tDESC")
@@ -132,6 +163,42 @@ func printStatusCompact(tr *tracker.Tracker) {
 		t := tr.Tickets[id]
 		fmt.Fprintf(color.Output, "%s\t%s\tp%d\t%s\n", id, t.Status, t.Phase, t.Desc)
 	}
+}
+
+func deriveStatusHints(cfg *config.Config, tr *tracker.Tracker, trackerPath string) statusHints {
+	h := statusHints{TrackerPath: trackerPath}
+	if cfg == nil || tr == nil {
+		return h
+	}
+	d := dispatcher.New(cfg, tr)
+	sig, spawnable := d.Evaluate()
+	h.Signal = string(sig)
+	h.Spawnable = len(spawnable)
+
+	s := tr.Stats()
+	switch sig {
+	case dispatcher.SignalPhaseGate:
+		h.BlockedReason = "PHASE_GATE"
+		h.NextAction = "run `agent-swarm go` to approve and continue"
+	case dispatcher.SignalBlocked:
+		switch {
+		case s.Failed > 0:
+			h.BlockedReason = "FAILED_TICKETS"
+			h.NextAction = "fix/respawn failed tickets, then rerun watchdog"
+		case s.Running > 0:
+			h.BlockedReason = "WAITING_FOR_RUNNING_TICKETS"
+			h.NextAction = "wait for running tickets to finish"
+		default:
+			h.BlockedReason = "WAITING_FOR_DEPENDENCIES"
+			h.NextAction = "inspect dependency chain and prompt/prep gates"
+		}
+	case dispatcher.SignalSpawn:
+		if !d.CanSpawnMore() {
+			h.BlockedReason = "CAPACITY_OR_RESOURCE_LIMIT"
+			h.NextAction = "reduce running agents or increase capacity"
+		}
+	}
+	return h
 }
 
 func colorStatus(status string) string {
