@@ -121,6 +121,8 @@ func buildGuardianReportPayload(entries []guardianevidence.DecisionEvidence) gua
 
 func init() {
 	guardianReportCmd.Flags().BoolVar(&guardianReportJSON, "json", false, "print report as JSON")
+	guardianMigrateCmd.Flags().BoolVar(&guardianMigrateApply, "apply", false, "write changes to config and scaffold missing flow file")
 	guardianCmd.AddCommand(guardianReportCmd)
+	guardianCmd.AddCommand(guardianMigrateCmd)
 	rootCmd.AddCommand(guardianCmd)
 }
