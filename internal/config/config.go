@@ -87,7 +87,9 @@ type IntegrationConfig struct {
 }
 
 type GuardianConfig struct {
-	Enabled bool `toml:"enabled"`
+	Enabled  bool   `toml:"enabled"`
+	FlowFile string `toml:"flow_file"`
+	Mode     string `toml:"mode"`
 }
 
 type ServeConfig struct {
@@ -178,7 +180,11 @@ func Default() *Config {
 			RequireIntegratedBase: true,
 			IntegratedBaseBranch:  "dev",
 		},
-		Guardian: GuardianConfig{Enabled: true},
+		Guardian: GuardianConfig{
+			Enabled:  true,
+			FlowFile: "swarm/flow.v2.yaml",
+			Mode:     "advisory",
+		},
 		StatusReport: StatusReportConfig{
 			Enabled:          false,
 			Interval:         "5m",
@@ -237,6 +243,14 @@ func Load(path string) (*Config, error) {
 	cfg.Project.FeaturesDir = resolveRelative(repoBase, cfg.Project.FeaturesDir)
 	cfg.Project.SpecFile = resolveRelative(repoBase, cfg.Project.SpecFile)
 	cfg.Lifecycle.PolicyFile = resolveRelative(repoBase, cfg.Lifecycle.PolicyFile)
+	if strings.TrimSpace(cfg.Guardian.FlowFile) == "" {
+		cfg.Guardian.FlowFile = "swarm/flow.v2.yaml"
+	}
+	cfg.Guardian.FlowFile = resolveRelative(repoBase, cfg.Guardian.FlowFile)
+	cfg.Guardian.Mode = strings.ToLower(strings.TrimSpace(cfg.Guardian.Mode))
+	if cfg.Guardian.Mode == "" {
+		cfg.Guardian.Mode = "advisory"
+	}
 
 	// If state_dir is configured and tracker is still the legacy repo-local
 	// default path, move tracker to state dir automatically.
@@ -318,6 +332,15 @@ func validate(cfg *Config) error {
 	}
 	if strings.TrimSpace(cfg.Notifications.Type) == "" {
 		return fmt.Errorf("notifications.type is required")
+	}
+	if strings.TrimSpace(cfg.Guardian.FlowFile) == "" {
+		return fmt.Errorf("guardian.flow_file is required")
+	}
+	switch cfg.Guardian.Mode {
+	case "advisory", "enforce":
+		// ok
+	default:
+		return fmt.Errorf("guardian.mode must be one of: advisory, enforce")
 	}
 	return nil
 }

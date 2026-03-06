@@ -297,3 +297,98 @@ type = "stdout"
 		t.Fatalf("tracker=%q", cfg.Project.Tracker)
 	}
 }
+
+func TestLoadGuardianDefaults(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeFile(t, dir, "swarm.toml", `
+[project]
+name = "myproject"
+
+[backend]
+type = "codex-tmux"
+
+[notifications]
+type = "stdout"
+
+[watchdog]
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if !cfg.Guardian.Enabled {
+		t.Fatalf("expected guardian enabled by default")
+	}
+	wantFlow := filepath.Join(dir, "swarm/flow.v2.yaml")
+	if cfg.Guardian.FlowFile != wantFlow {
+		t.Fatalf("guardian.flow_file=%q want %q", cfg.Guardian.FlowFile, wantFlow)
+	}
+	if cfg.Guardian.Mode != "advisory" {
+		t.Fatalf("guardian.mode=%q want advisory", cfg.Guardian.Mode)
+	}
+}
+
+func TestLoadGuardianCustomConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeFile(t, dir, "swarm.toml", `
+[project]
+name = "myproject"
+
+[backend]
+type = "codex-tmux"
+
+[notifications]
+type = "stdout"
+
+[watchdog]
+
+[guardian]
+enabled = false
+flow_file = "custom/flow.yaml"
+mode = "ENFORCE"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Guardian.Enabled {
+		t.Fatalf("expected guardian.enabled=false")
+	}
+	wantFlow := filepath.Join(dir, "custom/flow.yaml")
+	if cfg.Guardian.FlowFile != wantFlow {
+		t.Fatalf("guardian.flow_file=%q want %q", cfg.Guardian.FlowFile, wantFlow)
+	}
+	if cfg.Guardian.Mode != "enforce" {
+		t.Fatalf("guardian.mode=%q want enforce", cfg.Guardian.Mode)
+	}
+}
+
+func TestLoadGuardianInvalidMode(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := writeFile(t, dir, "swarm.toml", `
+[project]
+name = "myproject"
+
+[backend]
+type = "codex-tmux"
+
+[notifications]
+type = "stdout"
+
+[watchdog]
+
+[guardian]
+mode = "strict"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatalf("expected invalid guardian.mode error")
+	}
+}
