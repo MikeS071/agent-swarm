@@ -326,6 +326,13 @@ This deterministically:
 ### 17. Guardian migration + reporting
 
 ```bash
+# validate guardian policy file
+swarm guardian validate
+
+# evaluate policy for a specific enforcement point
+swarm guardian check --event transition
+swarm guardian check --event before_spawn --ticket g5-01 --json
+
 # preview changes (default dry-run)
 swarm guardian migrate
 

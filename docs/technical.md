@@ -175,6 +175,8 @@ SSE event bus constants:
 - `swarm integrate`
 - `swarm archive`
 - `swarm cleanup`
+- `swarm guardian validate`
+- `swarm guardian check`
 - `swarm guardian report`
 - `swarm guardian migrate`
 - `swarm serve`

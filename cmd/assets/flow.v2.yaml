@@ -3,8 +3,8 @@ mode: advisory
 
 settings:
   fail_closed: false
-  cache_ttl_seconds: 0
-  max_evidence_bytes: 1048576
+  cache_ttl_seconds: 30
+  max_evidence_bytes: 262144
 
 enforcement_points:
   - before_spawn
@@ -14,46 +14,124 @@ enforcement_points:
 
 contexts:
   default:
-    severity: warn
+    severity: block
 
 rules:
-  - id: ticket_has_required_fields
+  - id: prd_has_required_code_examples
     enabled: true
-    description: Require role/profile and verify command before spawn.
+    description: PRD must include required sections and code examples.
     severity: block
-    enforcement_points:
-      - before_spawn
+    enforcement_points: [transition]
     target:
-      kind: ticket
-      source: runtime
-      fields:
-        - profile
-        - verify_cmd
+      kind: file
+      paths: ["docs/prd/*.md", "PRD.md"]
+      match: any
     check:
-      type: required_fields
+      type: markdown_requirements
       params:
-        fields:
-          - profile
-          - verify_cmd
+        required_headings: ["## Objective", "## Scope", "## Acceptance Criteria"]
+        min_fenced_code_blocks: 2
     pass_when:
-      op: and
+      op: all
       conditions:
-        - metric: missing_count
-          equals: 0
-    fail_reason: Ticket is missing required fields.
+        - metric: headings_present
+          equals: true
+        - metric: fenced_code_blocks
+          gte: 2
+    fail_reason: "PRD missing required headings or code examples"
     evidence:
       kind: json
-      path: guardian/evidence/ticket_required_fields.json
+      path: "evidence/prd_has_required_code_examples-{target}.json"
+
+  - id: spec_has_api_and_schema_examples
+    enabled: true
+    description: Build spec must include API and schema examples.
+    severity: block
+    enforcement_points: [transition, post_build_complete]
+    target:
+      kind: file
+      paths: ["docs/**/*SPEC*.md", "**/*BUILD-SPEC*.md"]
+      match: any
+    check:
+      type: markdown_requirements
+      params:
+        required_keywords_any:
+          - ["curl", "HTTP", "endpoint"]
+          - ["schema", "yaml", "json"]
+        min_fenced_code_blocks: 2
+    pass_when:
+      op: all
+      conditions:
+        - metric: keyword_groups_matched
+          gte: 2
+        - metric: fenced_code_blocks
+          gte: 2
+    fail_reason: "Spec missing API/schema examples"
+    evidence:
+      kind: json
+      path: "evidence/spec_has_api_and_schema_examples-{target}.json"
+
+  - id: ticket_desc_has_scope_and_verify
+    enabled: true
+    description: Ticket must contain scope and verify details.
+    severity: block
+    enforcement_points: [before_spawn]
+    target:
+      kind: ticket
+      source: swarm/tracker.json
+      fields: ["scope", "verify"]
+    check:
+      type: ticket_fields
+      params:
+        required_fields: ["scope", "verify"]
+    pass_when:
+      op: all
+      conditions:
+        - metric: required_fields_present
+          equals: true
+    fail_reason: "Ticket missing scope and/or verify"
+    evidence:
+      kind: json
+      path: "evidence/ticket_desc_has_scope_and_verify-{ticket}.json"
+
+  - id: phase_has_int_gap_tst_chain
+    enabled: true
+    description: Each phase must include an int→gap→tst dependency chain.
+    severity: block
+    enforcement_points: [transition]
+    target:
+      kind: phase
+      source: swarm/tracker.json
+    check:
+      type: phase_chain
+      params:
+        required_kinds: ["int", "gap", "tst"]
+    pass_when:
+      op: all
+      conditions:
+        - metric: required_kinds_present
+          equals: true
+        - metric: dependency_order_valid
+          equals: true
+    fail_reason: "Phase missing int→gap→tst chain"
+    evidence:
+      kind: json
+      path: "evidence/phase_has_int_gap_tst_chain-{phase}.json"
 
 overrides:
   enabled: true
   require_reason: true
   require_expiry: true
-  max_duration_hours: 8
-  store: guardian/approvals.json
+  max_duration_hours: 24
+  store: "approvals.json"
 
 events:
-  file: guardian/events.jsonl
+  file: "guardian-events.jsonl"
   include:
-    - decision
-    - override
+    - timestamp
+    - enforcement_point
+    - rule_id
+    - result
+    - reason
+    - target
+    - evidence_path

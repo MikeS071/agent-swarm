@@ -122,6 +122,12 @@ func buildGuardianReportPayload(entries []guardianevidence.DecisionEvidence) gua
 func init() {
 	guardianReportCmd.Flags().BoolVar(&guardianReportJSON, "json", false, "print report as JSON")
 	guardianMigrateCmd.Flags().BoolVar(&guardianMigrateApply, "apply", false, "write changes to config and scaffold missing flow file")
+	guardianCheckCmd.Flags().StringVar(&guardianCheckEvent, "event", "transition", "enforcement point: before_spawn|before_mark_done|transition|post_build_complete")
+	guardianCheckCmd.Flags().StringVar(&guardianCheckTicket, "ticket", "", "ticket id for ticket-scoped checks")
+	guardianCheckCmd.Flags().IntVar(&guardianCheckPhase, "phase", 0, "phase number override (default active phase)")
+	guardianCheckCmd.Flags().BoolVar(&guardianCheckJSON, "json", false, "print check result as JSON")
+	guardianCmd.AddCommand(guardianValidateCmd)
+	guardianCmd.AddCommand(guardianCheckCmd)
 	guardianCmd.AddCommand(guardianReportCmd)
 	guardianCmd.AddCommand(guardianMigrateCmd)
 	rootCmd.AddCommand(guardianCmd)

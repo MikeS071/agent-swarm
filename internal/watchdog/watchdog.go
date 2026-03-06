@@ -397,7 +397,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 				if gdec.Result == guardian.ResultBlock {
 					_ = w.dispatcher.MarkFailed(ticketID)
 					_ = w.saveTracker()
-					_ = w.appendEvent("guardian_block", ticketID, map[string]any{"event": "before_mark_done", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath})
+					_ = w.appendEvent("guardian_block", ticketID, map[string]any{"event": "before_mark_done", "rule": gdec.RuleID, "reason": gdec.Reason, "target": gdec.Target, "evidence": gdec.EvidencePath})
 					_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked completion for %s", ticketID))
 					continue
 				}
@@ -574,7 +574,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 		if gdec.Result == guardian.ResultBlock {
 			if !w.gateNoticed {
 				w.gateNoticed = true
-				_ = w.appendEvent("guardian_block", "", map[string]any{"event": "phase_transition", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath, "phase": phase})
+				_ = w.appendEvent("guardian_block", "", map[string]any{"event": "phase_transition", "rule": gdec.RuleID, "reason": gdec.Reason, "target": gdec.Target, "evidence": gdec.EvidencePath, "phase": phase})
 				_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked phase transition: %s", gdec.Reason))
 			}
 			return nil
@@ -622,7 +622,7 @@ func (w *Watchdog) RunOnce(ctx context.Context) error {
 	if sig == dispatcher.SignalAllDone && !w.completionSent {
 		gdec, _ := w.guardianCheck(ctx, guardian.EventPostBuildDone, "", tracker.Ticket{Phase: w.dispatcher.CurrentPhase()}, nil)
 		if gdec.Result == guardian.ResultBlock {
-			_ = w.appendEvent("guardian_block", "", map[string]any{"event": "post_build_complete", "rule": gdec.RuleID, "reason": gdec.Reason, "evidence": gdec.EvidencePath})
+			_ = w.appendEvent("guardian_block", "", map[string]any{"event": "post_build_complete", "rule": gdec.RuleID, "reason": gdec.Reason, "target": gdec.Target, "evidence": gdec.EvidencePath})
 			_ = w.notifier.Alert(ctx, fmt.Sprintf("guardian blocked completion: %s", gdec.Reason))
 			return nil
 		}
@@ -972,7 +972,7 @@ func (w *Watchdog) SpawnTicket(ctx context.Context, ticketID string) error {
 
 	dec, _ := w.guardianCheck(ctx, guardian.EventBeforeSpawn, ticketID, tk, map[string]any{"prompt": string(promptBody)})
 	if dec.Result == guardian.ResultBlock {
-		_ = w.appendEvent("guardian_block", ticketID, map[string]any{"event": "before_spawn", "rule": dec.RuleID, "reason": dec.Reason, "evidence": dec.EvidencePath})
+		_ = w.appendEvent("guardian_block", ticketID, map[string]any{"event": "before_spawn", "rule": dec.RuleID, "reason": dec.Reason, "target": dec.Target, "evidence": dec.EvidencePath})
 		return fmt.Errorf("guardian blocked spawn for %s: %s", ticketID, dec.Reason)
 	}
 	if w != nil && w.config != nil && w.config.Project.RequireExplicitRole && strings.TrimSpace(tk.Profile) == "" {
@@ -1653,6 +1653,9 @@ func (w *Watchdog) guardianCheck(ctx context.Context, ev guardian.Event, ticketI
 		"verify_cmd": strings.TrimSpace(tk.VerifyCmd),
 		"desc":       strings.TrimSpace(tk.Desc),
 	}
+	if w != nil && w.tracker != nil {
+		ctxMap["tickets"] = w.tracker.Tickets
+	}
 	for k, v := range extra {
 		ctxMap[k] = v
 	}
@@ -1683,6 +1686,14 @@ func (w *Watchdog) guardianCheck(ctx context.Context, ev guardian.Event, ticketI
 			dec.EvidencePath = p
 		}
 	}
+	_ = guardianevidence.AppendGuardianEvent(filepath.Join(w.runtimeStateRoot(), "guardian"), guardianevidence.GuardianEvent{
+		EnforcementPoint: string(ev),
+		RuleID:           strings.TrimSpace(dec.RuleID),
+		Result:           string(dec.Result),
+		Reason:           strings.TrimSpace(dec.Reason),
+		Target:           strings.TrimSpace(dec.Target),
+		EvidencePath:     strings.TrimSpace(dec.EvidencePath),
+	})
 	return dec, nil
 }
 

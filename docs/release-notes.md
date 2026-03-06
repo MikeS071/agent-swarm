@@ -1,5 +1,28 @@
 # Release Notes
 
+## 2026-03-06 — Guardian Spec Alignment Pass (policy runtime + CLI surface)
+
+### Added
+- `swarm guardian validate` to parse+validate `guardian.flow_file` policy.
+- `swarm guardian check` to evaluate policy decisions at selected enforcement points.
+- Guardian event stream writer: `guardian-events.jsonl` under runtime guardian state.
+- Policy-based evaluator wired to runtime (`NewPolicyEvaluator`) with support for:
+  - `ticket_desc_has_scope_and_verify`
+  - `phase_has_int_gap_tst_chain`
+  - `prd_has_required_code_examples`
+  - `spec_has_api_and_schema_examples`
+
+### Changed
+- Watchdog now uses policy evaluator instead of hardcoded strict evaluator.
+- `go` phase-gate command now performs guardian transition evaluation before approving.
+- Guardian decision model now includes explicit `target`.
+- Default scaffolded `flow.v2.yaml` upgraded to full four-rule baseline policy.
+
+### Validation
+- `go test ./... -count=1`
+- `go run . guardian validate`
+- `go run . guardian check --event transition --json`
+
 ## 2026-03-06 — Guardian G5 Delivery (Config + Init + Migrate + Chain Rule)
 
 ### Added

@@ -15,7 +15,7 @@ type Event string
 const (
 	EventBeforeSpawn     Event = "before_spawn"
 	EventBeforeMarkDone  Event = "before_mark_done"
-	EventPhaseTransition Event = "phase_transition"
+	EventPhaseTransition Event = "transition"
 	EventPostBuildDone   Event = "post_build_complete"
 )
 
@@ -31,6 +31,7 @@ type Decision struct {
 	Result       Result
 	RuleID       string
 	Reason       string
+	Target       string
 	EvidencePath string
 }
 

@@ -51,7 +51,7 @@ func runWatchWithConfigPath(ctx context.Context, configPath string, intervalOver
 	wd.SetConfigPath(configPath)
 	wd.SetDryRun(dryRun)
 	if cfg.Guardian.Enabled {
-		wd.SetGuardian(guardian.NewStrictEvaluator())
+		wd.SetGuardian(guardian.NewPolicyEvaluator(cfg))
 	}
 
 	if once {
