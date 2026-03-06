@@ -38,6 +38,9 @@ func TestScaffoldProjectCreatesExpectedLayout(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "AGENTS.md")); err != nil {
 		t.Fatalf("expected AGENTS.md to exist: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(root, "swarm", "flow.v2.yaml")); err != nil {
+		t.Fatalf("expected swarm/flow.v2.yaml to exist: %v", err)
+	}
 
 	cfg, err := config.Load(filepath.Join(root, "swarm.toml"))
 	if err != nil {
@@ -46,8 +49,38 @@ func TestScaffoldProjectCreatesExpectedLayout(t *testing.T) {
 	if cfg.Project.Name != "my-project" {
 		t.Fatalf("project name = %q, want %q", cfg.Project.Name, "my-project")
 	}
+	wantFlow := filepath.Join(root, "swarm", "flow.v2.yaml")
+	if cfg.Guardian.FlowFile != wantFlow {
+		t.Fatalf("guardian.flow_file = %q, want %q", cfg.Guardian.FlowFile, wantFlow)
+	}
 	if _, err := os.Stat(cfg.Project.Tracker); err != nil {
 		t.Fatalf("expected state tracker to exist at %s: %v", cfg.Project.Tracker, err)
+	}
+}
+
+func TestInitScaffoldCreatesGuardianFlowFile(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "init-guardian-flow")
+
+	if err := scaffoldProject(root); err != nil {
+		t.Fatalf("scaffoldProject() error = %v", err)
+	}
+
+	flowPath := filepath.Join(root, "swarm", "flow.v2.yaml")
+	b, err := os.ReadFile(flowPath)
+	if err != nil {
+		t.Fatalf("read flow.v2.yaml: %v", err)
+	}
+	if !strings.Contains(string(b), "version: 2") {
+		t.Fatalf("expected flow.v2.yaml to contain version header")
+	}
+
+	cfg, err := config.Load(filepath.Join(root, "swarm.toml"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Guardian.FlowFile != flowPath {
+		t.Fatalf("guardian.flow_file = %q, want %q", cfg.Guardian.FlowFile, flowPath)
 	}
 }
 

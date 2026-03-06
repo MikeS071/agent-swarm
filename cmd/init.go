@@ -178,6 +178,13 @@ func scaffoldProject(project string) error {
 	}
 	copied += n
 
+	// Guardian flow scaffold
+	n, err = copyEmbedDir(assets, "assets/flow.v2.yaml", filepath.Join(root, "swarm"))
+	if err != nil {
+		return fmt.Errorf("copy flow.v2.yaml: %w", err)
+	}
+	copied += n
+
 	// Skills
 	n, err = copyEmbedTree(assets, "assets/skills", filepath.Join(root, ".agents", "skills"))
 	if err != nil {
@@ -209,7 +216,7 @@ func scaffoldProject(project string) error {
 
 	fmt.Printf("✅ Initialized %s\n", projectName)
 	fmt.Printf("   swarm.toml + state tracker (%s)\n", cfg.Project.Tracker)
-	fmt.Printf("   %d asset files (AGENTS.md, skills, profiles, rules)\n", copied)
+	fmt.Printf("   %d asset files (AGENTS.md, guardian flow, skills, profiles, rules)\n", copied)
 	fmt.Printf("   swarm/features/ — feature lifecycle directory\n")
 	fmt.Printf("   swarm/tracker.seed.json — immutable seed tracker\n")
 	if len(archived) > 0 {

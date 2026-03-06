@@ -1,0 +1,59 @@
+version: 2
+mode: advisory
+
+settings:
+  fail_closed: false
+  cache_ttl_seconds: 0
+  max_evidence_bytes: 1048576
+
+enforcement_points:
+  - before_spawn
+  - before_mark_done
+  - transition
+  - post_build_complete
+
+contexts:
+  default:
+    severity: warn
+
+rules:
+  - id: ticket_has_required_fields
+    enabled: true
+    description: Require role/profile and verify command before spawn.
+    severity: block
+    enforcement_points:
+      - before_spawn
+    target:
+      kind: ticket
+      source: runtime
+      fields:
+        - profile
+        - verify_cmd
+    check:
+      type: required_fields
+      params:
+        fields:
+          - profile
+          - verify_cmd
+    pass_when:
+      op: and
+      conditions:
+        - metric: missing_count
+          equals: 0
+    fail_reason: Ticket is missing required fields.
+    evidence:
+      kind: json
+      path: guardian/evidence/ticket_required_fields.json
+
+overrides:
+  enabled: true
+  require_reason: true
+  require_expiry: true
+  max_duration_hours: 8
+  store: guardian/approvals.json
+
+events:
+  file: guardian/events.jsonl
+  include:
+    - decision
+    - override
