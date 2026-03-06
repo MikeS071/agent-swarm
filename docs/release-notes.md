@@ -1,5 +1,29 @@
 # Release Notes
 
+## 2026-03-06 — Guardian G5 Delivery (Config + Init + Migrate + Chain Rule)
+
+### Added
+- Guardian config parsing now supports:
+  - `guardian.enabled`
+  - `guardian.flow_file`
+  - `guardian.mode` (`advisory` | `enforce`)
+- `swarm init` now scaffolds default `swarm/flow.v2.yaml` guardian flow file.
+- New `swarm guardian migrate` command:
+  - default dry-run report
+  - `--apply` writes advisory-first safe defaults and scaffolds missing flow file
+- New phase rule helper `CheckPhaseIntGapTstChain` validating int→gap→tst dependency chain per phase.
+
+### Changed
+- Guardian config loading now normalizes mode values and validates allowed values.
+- Documentation updated for guardian migration/reporting workflows.
+
+### Validation
+- `go test ./internal/config/... -run Guardian`
+- `go test ./cmd/... -run Init`
+- `go test ./cmd/... -run GuardianMigrate`
+- `go test ./internal/guardian/rules/... -run Chain`
+- `go test ./... -count=1`
+
 ## 2026-03-05 — Post-build Simplification + Runtime Refresh Hardening
 
 ### Added

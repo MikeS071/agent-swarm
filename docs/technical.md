@@ -55,6 +55,9 @@ Notable project fields:
 - `post_build.order` (default doc-only)
 - `post_build.require_integrated_base`
 - `post_build.integrated_base_branch`
+- `guardian.enabled`
+- `guardian.flow_file`
+- `guardian.mode` (`advisory` | `enforce`)
 
 ### `internal/tracker`
 
@@ -172,6 +175,8 @@ SSE event bus constants:
 - `swarm integrate`
 - `swarm archive`
 - `swarm cleanup`
+- `swarm guardian report`
+- `swarm guardian migrate`
 - `swarm serve`
 - `swarm install` (runs multi-project watchdog runner)
 

@@ -34,7 +34,9 @@ swarm init my-app
 
 This creates and validates:
 - `swarm.toml`
-- `swarm/tracker.json`
+- state tracker (under `project.state_dir`)
+- `swarm/tracker.seed.json`
+- `swarm/flow.v2.yaml` (guardian flow scaffold)
 - `swarm/prompts/`
 - `swarm/features/`
 - `swarm/logs/`
@@ -85,6 +87,11 @@ order = ["doc"]
 parallel_groups = []
 require_integrated_base = true
 integrated_base_branch = "dev"
+
+[guardian]
+enabled = true
+flow_file = "swarm/flow.v2.yaml"
+mode = "advisory"   # advisory | enforce
 ```
 
 ### 5. Run hard preflight gates
@@ -315,3 +322,22 @@ This deterministically:
 - enforces systemd watchdog `ExecStart` path
 - reloads/restarts user systemd timer
 - validates path/version/hash parity
+
+### 17. Guardian migration + reporting
+
+```bash
+# preview changes (default dry-run)
+swarm guardian migrate
+
+# apply safe defaults + scaffold missing flow file
+swarm guardian migrate --apply
+
+# inspect guardian evidence
+swarm guardian report
+swarm guardian report --json
+```
+
+Migration defaults are advisory-first:
+- `guardian.enabled = true`
+- `guardian.mode = "advisory"`
+- `guardian.flow_file = "swarm/flow.v2.yaml"`
